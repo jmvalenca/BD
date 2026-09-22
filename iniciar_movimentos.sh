@@ -10,6 +10,8 @@
 #   ssh -L 2718:localhost:2718 utilizador@este-computador \
 #       'bash ~/caminho/para/iniciar_movimentos.sh'
 #
+# Neste caso
+#   ssh -L 2718:localhost:2718 josevalenca@mbp-de-jose 'bash ~/Dropbox/iniciar_movimentos.sh'
 # Enquanto essa ligação SSH estiver aberta, a aplicação fica acessível em
 # http://localhost:2718 no computador do utilizador remoto. Fechar a
 # ligação SSH (ou o botão "Fechar aplicação" dentro da própria app) termina
@@ -28,6 +30,7 @@ set -euo pipefail
 PORT="${PORT:-2718}"
 
 # Diretoria onde este script (e o movimentos.py) estão guardados.
+UV="/opt/homebrew/bin/uv"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$DIR/movimentos.py"
 
@@ -40,6 +43,7 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
     echo "Erro: o comando 'uv' não está instalado nesta máquina." >&2
     echo "Instale com:  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    echo "Verifique se 'uv' é acessível no PATH $PATH" >&2
     exit 1
 fi
 
@@ -56,7 +60,7 @@ echo
 # --host 127.0.0.1: só aceita ligações locais; o acesso remoto é feito
 #             exclusivamente através do túnel SSH (-L) usado para chamar
 #             este script.
-exec uv run --with marimo marimo run "$APP" \
+exec "$UV" run --with marimo marimo run "$APP" \
     --sandbox \
     --headless \
     --host 127.0.0.1 \
