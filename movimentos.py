@@ -393,6 +393,87 @@ def _(DB_NAME, bd_pronta, filtro_form, inserido, mo, params, psycopg):
 
 
 @app.cell
+def _(mo):
+    # 6b) Exportar o resultado da seleção acima para um ficheiro CSV, na
+    # diretoria atual ou noutra diretoria indicada pelo utilizador.
+    exportar_csv_form = (
+        mo.md(
+            """
+            ## Exportar resultado para CSV
+
+            {diretoria}
+
+            {nome_ficheiro}
+            """
+        )
+        .batch(
+            diretoria=mo.ui.text(
+                value="",
+                label="Diretoria de destino (vazio = diretoria atual)",
+            ),
+            nome_ficheiro=mo.ui.text(
+                value="movimentos.csv",
+                label="Nome do ficheiro",
+            ),
+        )
+        .form(submit_button_label="Guardar CSV")
+    )
+    exportar_csv_form
+    return (exportar_csv_form,)
+
+
+@app.cell
+def _(exportar_csv_form, mo, os, resultado_tabela):
+    mo.stop(
+        exportar_csv_form.value is None,
+        mo.md(
+            "_Indique a diretoria (opcional) e o nome do ficheiro e carregue "
+            "em **Guardar CSV**._"
+        ),
+    )
+
+    _diretoria = exportar_csv_form.value["diretoria"].strip() or os.getcwd()
+    _nome_ficheiro = exportar_csv_form.value["nome_ficheiro"].strip() or "movimentos.csv"
+
+    try:
+        os.makedirs(_diretoria, exist_ok=True)
+    except OSError as _erro:
+        mo.stop(
+            True, mo.md(f"**Não foi possível criar/aceder à diretoria:** {_erro}")
+        )
+
+    _caminho_csv = os.path.join(_diretoria, _nome_ficheiro)
+    _linhas_csv = resultado_tabela.data
+
+    try:
+        import csv
+
+        _colunas = [
+            "id",
+            "cliente",
+            "descricao",
+            "credito (€)",
+            "debito (€)",
+            "data & hora",
+            "saldo (€)",
+            "correção",
+        ]
+        with open(_caminho_csv, "w", newline="", encoding="utf-8") as _ficheiro_csv:
+            _escritor = csv.DictWriter(_ficheiro_csv, fieldnames=_colunas)
+            _escritor.writeheader()
+            _escritor.writerows(_linhas_csv)
+        mensagem_csv = mo.md(
+            f"✅ Resultado guardado em **{_caminho_csv}** "
+            f"({len(_linhas_csv)} registo(s))."
+        )
+    except OSError as _erro:
+        mensagem_csv = mo.md(f"**Erro ao guardar o ficheiro:** {_erro}")
+
+    mensagem_csv
+    return
+
+
+@app.cell
 def _(mo, resultado_tabela, utilizador):
     # 7) Purgar registos selecionados — só disponível para o utilizador "postgres".
     # O painel de confirmação aparece diretamente assim que houver linhas
