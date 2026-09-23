@@ -270,6 +270,165 @@ def _(DB_NAME, bd_pronta, form, mo, params, psycopg):
 
 
 @app.cell
+def _(bd_pronta, mo):
+    # 4b) Criar múltiplos registos a partir de um ficheiro CSV. Aceita o mesmo
+    # formato do CSV exportado (secção 6b) ou apenas as colunas essenciais.
+    # As colunas "id", "data & hora" e "saldo", se existirem, são ignoradas:
+    # são sempre geradas pela base de dados (o saldo pelo trigger).
+    _ = bd_pronta
+    importar_csv_form = (
+        mo.md(
+            """
+            ## Novas entradas a partir de CSV
+
+            Colunas reconhecidas: `cliente` (obrigatória), `descricao`,
+            `credito`, `debito` e `correção` — com ou sem o sufixo `(€)`.
+            Separador `,` ou `;`; decimais com `.` ou `,`. As colunas `id`,
+            `data & hora` e `saldo` são ignoradas. Se alguma linha tiver
+            erros, **nenhum** registo é inserido.
+
+            {ficheiro}
+            """
+        )
+        .batch(
+            ficheiro=mo.ui.file(
+                filetypes=[".csv"], kind="area", label="Ficheiro CSV"
+            ),
+        )
+        .form(submit_button_label="Importar")
+    )
+    importar_csv_form
+    return (importar_csv_form,)
+
+
+@app.cell
+def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg):
+    assert bd_pronta
+    import csv as _csv
+    import io as _io
+    import unicodedata as _unicodedata
+    from decimal import Decimal as _Decimal, InvalidOperation as _InvalidOperation
+
+    def _normalizar_cabecalho(nome):
+        # "Crédito (€)" -> "credito", "correção" -> "correcao", etc.
+        nome = (nome or "").replace("(€)", "").strip().lower()
+        nome = _unicodedata.normalize("NFKD", nome)
+        return "".join(ch for ch in nome if not _unicodedata.combining(ch))
+
+    def _valor(texto):
+        texto = (texto or "").strip().replace(" ", "").replace("€", "")
+        if not texto:
+            return _Decimal("0.00")
+        if "," in texto and "." in texto:
+            # O último separador é o decimal: "1.234,56" ou "1,234.56"
+            if texto.rfind(",") > texto.rfind("."):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        else:
+            texto = texto.replace(",", ".")
+        numero = _Decimal(texto)
+        if numero < 0:
+            raise ValueError("valor negativo")
+        return numero.quantize(_Decimal("0.01"))
+
+    _VERDADEIRO = {"true", "1", "sim", "s", "yes", "y", "verdadeiro", "v", "x"}
+    _FALSO = {"false", "0", "nao", "n", "no", "falso", "f", ""}
+
+    def _booleano(texto):
+        texto = _normalizar_cabecalho(texto)
+        if texto in _VERDADEIRO:
+            return True
+        if texto in _FALSO:
+            return False
+        raise ValueError(f"valor de correção inválido: {texto!r}")
+
+    def _ler_csv(conteudo):
+        try:
+            texto = conteudo.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            texto = conteudo.decode("cp1252")
+        try:
+            dialeto = _csv.Sniffer().sniff(texto[:4096], delimiters=",;\t")
+        except _csv.Error:
+            dialeto = _csv.excel
+        leitor = _csv.DictReader(_io.StringIO(texto), dialect=dialeto)
+        colunas = {_normalizar_cabecalho(c): c for c in (leitor.fieldnames or [])}
+        if "cliente" not in colunas:
+            return [], ["O ficheiro não tem a coluna obrigatória **cliente**."]
+
+        registos, erros = [], []
+        for n_linha, linha in enumerate(leitor, start=2):
+            def campo(nome):
+                original = colunas.get(nome)
+                return (linha.get(original) or "") if original else ""
+
+            if not any((v or "").strip() for v in linha.values() if isinstance(v, str)):
+                continue  # linha vazia
+            cliente = campo("cliente").strip()
+            try:
+                if not cliente:
+                    raise ValueError("cliente vazio")
+                credito = _valor(campo("credito"))
+                debito = _valor(campo("debito"))
+                correcao = _booleano(campo("correcao"))
+            except _InvalidOperation:
+                erros.append(f"Linha {n_linha}: valor numérico inválido")
+                continue
+            except ValueError as erro:
+                erros.append(f"Linha {n_linha}: {erro}")
+                continue
+            registos.append(
+                (cliente, campo("descricao").strip(), credito, debito, correcao)
+            )
+        return registos, erros
+
+    inseridos_csv = 0
+    _ficheiros = (importar_csv_form.value or {}).get("ficheiro") or []
+    if not _ficheiros:
+        mensagem_importacao = mo.md(
+            "_Escolha um ficheiro CSV e carregue em **Importar**._"
+        )
+    else:
+        _registos, _erros = _ler_csv(_ficheiros[0].contents)
+        if _erros:
+            mensagem_importacao = mo.md(
+                "**Importação cancelada — nenhum registo foi inserido.**\n\n"
+                + "\n".join(f"- {e}" for e in _erros[:20])
+                + (f"\n- … e mais {len(_erros) - 20} erro(s)" if len(_erros) > 20 else "")
+            )
+        elif not _registos:
+            mensagem_importacao = mo.md("⚠️ O ficheiro não contém registos.")
+        else:
+            try:
+                # Uma única transação: ou entram todos, ou nenhum. O
+                # clock_timestamp() dá a cada linha uma data & hora distinta,
+                # para o trigger calcular o saldo pela ordem do ficheiro.
+                with psycopg.connect(**params, dbname=DB_NAME) as conn_csv:
+                    with conn_csv.cursor() as cur_csv:
+                        cur_csv.executemany(
+                            "INSERT INTO movimentos "
+                            '(cliente, descricao, credito, debito, "correção", "data&hora") '
+                            "VALUES (%s, %s, %s, %s, %s, clock_timestamp())",
+                            _registos,
+                        )
+                inseridos_csv = len(_registos)
+                _total_credito = sum(r[2] for r in _registos)
+                _total_debito = sum(r[3] for r in _registos)
+                mensagem_importacao = mo.md(
+                    f"✅ **{inseridos_csv}** registo(s) inserido(s) a partir de "
+                    f"**{_ficheiros[0].name}** — crédito total {_total_credito:.2f} €, "
+                    f"débito total {_total_debito:.2f} €."
+                )
+            except psycopg.Error as _erro:
+                mensagem_importacao = mo.md(
+                    f"**Erro ao inserir — nenhum registo foi inserido:** {_erro}"
+                )
+    mensagem_importacao
+    return (inseridos_csv,)
+
+
+@app.cell
 def _(mo):
     # 5) Comando para selecionar registos, incluindo limites numéricos
     # (mínimo/máximo) opcionais para crédito, débito e saldo. Usam campos de
@@ -310,10 +469,12 @@ def _(mo):
 
 
 @app.cell
-def _(DB_NAME, bd_pronta, filtro_form, inserido, mo, params, psycopg):
+def _(
+    DB_NAME, bd_pronta, filtro_form, inserido, inseridos_csv, mo, params, psycopg
+):
     # 6) Apresentar a seleção (as linhas podem ser marcadas na tabela para,
     # se o utilizador for "postgres", serem purgadas — ver secção seguinte)
-    _ = (bd_pronta, inserido)
+    _ = (bd_pronta, inserido, inseridos_csv)
     mo.stop(
         filtro_form.value is None,
         mo.md("_Preencha os filtros e carregue em **Selecionar**._"),

@@ -11,7 +11,8 @@
 #       'bash ~/caminho/para/iniciar_movimentos.sh'
 #
 # Neste caso
-#   ssh -L 2718:localhost:2718 josevalenca@mbp-de-jose 'bash ~/Dropbox/iniciar_movimentos.sh'
+#   ssh -L 2718:localhost:2718 josevalenca@mbp-de-jose 'bash ~/Library/CloudStorage/Dropbox/BD/iniciar_movimentos.sh'
+# ou, mais simples, o utilizador remoto corre o abrir_movimentos.sh (ou .cmd no Windows)
 # Enquanto essa ligação SSH estiver aberta, a aplicação fica acessível em
 # http://localhost:2718 no computador do utilizador remoto. Fechar a
 # ligação SSH (ou o botão "Fechar aplicação" dentro da própria app) termina
@@ -30,7 +31,6 @@ set -euo pipefail
 PORT="${PORT:-2718}"
 
 # Diretoria onde este script (e o movimentos.py) estão guardados.
-UV="/opt/homebrew/bin/uv"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$DIR/movimentos.py"
 
@@ -40,7 +40,14 @@ if [[ ! -f "$APP" ]]; then
     exit 1
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
+# Numa sessão SSH não interativa o PATH é mínimo (não inclui o Homebrew),
+# por isso procuramos o uv também nos locais de instalação habituais.
+UV="$(command -v uv 2>/dev/null || true)"
+for _c in /opt/homebrew/bin/uv /usr/local/bin/uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+    [[ -z "$UV" && -x "$_c" ]] && UV="$_c"
+done
+
+if [[ -z "$UV" ]]; then
     echo "Erro: o comando 'uv' não está instalado nesta máquina." >&2
     echo "Instale com:  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
     echo "Verifique se 'uv' é acessível no PATH $PATH" >&2
@@ -60,6 +67,9 @@ echo
 # --host 127.0.0.1: só aceita ligações locais; o acesso remoto é feito
 #             exclusivamente através do túnel SSH (-L) usado para chamar
 #             este script.
+# O marimo --sandbox volta a chamar "uv" internamente, por isso tem de estar no PATH.
+export PATH="$(dirname "$UV"):$PATH"
+
 exec "$UV" run --with marimo marimo run "$APP" \
     --sandbox \
     --headless \
