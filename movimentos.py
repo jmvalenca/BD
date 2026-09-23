@@ -152,17 +152,31 @@ def _(DB_NAME, params, psycopg):
                     ADD COLUMN IF NOT EXISTS "correção" BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
-            # Função e trigger: calculam automaticamente o saldo acumulado
-            # (credito - debito desta linha e de todas as anteriores) em cada inserção
+            # Índice para encontrar depressa o último movimento de cada cliente.
+            # O nome do cliente NÃO distingue maiúsculas de minúsculas
+            # ("Ana", "ana" e "ANA" são o mesmo cliente), daí o lower().
+            conn_ddl.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_movimentos_cliente
+                    ON movimentos (lower(cliente), "data&hora" DESC, id DESC)
+                """
+            )
+            # Função e trigger: calculam automaticamente o saldo de CADA CLIENTE
+            # em cada inserção: último saldo desse cliente + crédito - débito.
             conn_ddl.execute(
                 """
                 CREATE OR REPLACE FUNCTION calcular_saldo() RETURNS TRIGGER AS $$
                 DECLARE
                     saldo_anterior NUMERIC(14,2);
                 BEGIN
+                    -- Bloqueia (até ao fim da transação) inserções concorrentes
+                    -- para o mesmo cliente, para não lerem ambas o mesmo saldo.
+                    PERFORM pg_advisory_xact_lock(hashtext(lower(NEW.cliente)));
+
                     SELECT saldo INTO saldo_anterior
                     FROM movimentos
-                    ORDER BY "data&hora" DESC, ctid DESC
+                    WHERE lower(cliente) = lower(NEW.cliente)
+                    ORDER BY "data&hora" DESC, id DESC
                     LIMIT 1;
 
                     NEW.saldo := COALESCE(saldo_anterior, 0) + NEW.credito - NEW.debito;
@@ -178,6 +192,25 @@ def _(DB_NAME, params, psycopg):
                     BEFORE INSERT ON movimentos
                     FOR EACH ROW
                     EXECUTE FUNCTION calcular_saldo()
+                """
+            )
+            # Recalcula os saldos já gravados (corrige os registos feitos com a
+            # versão antiga do trigger, que acumulava o saldo de todos os
+            # clientes juntos). Idempotente: só altera linhas com saldo errado.
+            conn_ddl.execute(
+                """
+                UPDATE movimentos AS m
+                SET saldo = c.saldo_correto
+                FROM (
+                    SELECT id,
+                           SUM(credito - debito) OVER (
+                               PARTITION BY lower(cliente)
+                               ORDER BY "data&hora", id
+                           ) AS saldo_correto
+                    FROM movimentos
+                ) AS c
+                WHERE m.id = c.id
+                  AND m.saldo IS DISTINCT FROM c.saldo_correto
                 """
             )
             # Privilégios: só o "postgres" (dono da tabela) pode alterar ou apagar
@@ -255,7 +288,7 @@ def _(DB_NAME, bd_pronta, form, mo, params, psycopg):
                 'INSERT INTO movimentos (cliente, descricao, credito, debito, "correção") '
                 "VALUES (%s, %s, %s, %s, %s)",
                 (
-                    form.value["cliente"],
+                    form.value["cliente"].strip(),
                     form.value["descricao"],
                     form.value["credito"],
                     form.value["debito"],
@@ -433,7 +466,8 @@ def _(mo):
     # 5) Comando para selecionar registos, incluindo limites numéricos
     # (mínimo/máximo) opcionais para crédito, débito e saldo. Usam campos de
     # texto — não campos numéricos — para ficarem mesmo "não preenchidos" por
-    # omissão, em vez de mostrarem um valor por defeito.
+    # omissão, em vez de mostrarem um valor por defeito, e para aceitarem o
+    # carácter especial "?" (valor mínimo/máximo da coluna).
     filtro_form = (
         mo.md(
             """
@@ -448,6 +482,10 @@ def _(mo):
             **Débito (€) entre:** {debito_min} e {debito_max}
 
             **Saldo (€) entre:** {saldo_min} e {saldo_max}
+
+            _Nos limites pode usar `?`: no campo **mín.** significa o valor
+            mínimo da coluna e no campo **máx.** o valor máximo (entre os
+            registos do cliente/correções escolhidos)._
             """
         )
         .batch(
@@ -480,8 +518,11 @@ def _(
         mo.md("_Preencha os filtros e carregue em **Selecionar**._"),
     )
 
-    def _numero_ou_none(texto):
+    def _numero_ou_none(texto, extremo):
+        # "?" -> valor extremo da coluna (mínimo no campo mín., máximo no máx.)
         texto = (texto or "").strip().replace(",", ".")
+        if texto == "?":
+            return extremo
         return float(texto) if texto else None
 
     _valores = filtro_form.value
@@ -502,10 +543,46 @@ def _(
         ("debito", "debito_min", "debito_max"),
         ("saldo", "saldo_min", "saldo_max"),
     )
+
+    # Valores mínimo e máximo de cada coluna, para substituir o "?". São
+    # calculados sobre os registos que respeitam os filtros de cliente e de
+    # correções (ainda não há limites numéricos em _condicoes neste ponto).
+    _extremos = {}
+    if any(
+        (_valores[_k] or "").strip() == "?"
+        for _, _kmin, _kmax in _limites
+        for _k in (_kmin, _kmax)
+    ):
+        _sql_ext = (
+            "SELECT MIN(credito), MAX(credito), MIN(debito), MAX(debito), "
+            "MIN(saldo), MAX(saldo) FROM movimentos"
+        )
+        if _condicoes:
+            _sql_ext += " WHERE " + " AND ".join(_condicoes)
+        with psycopg.connect(**params, dbname=DB_NAME) as conn_ext:
+            _ext = conn_ext.execute(_sql_ext, _parametros).fetchone()
+        for _i, (_coluna, _, _) in enumerate(_limites):
+            _mn, _mx = _ext[2 * _i], _ext[2 * _i + 1]
+            _extremos[_coluna] = (
+                None if _mn is None else float(_mn),
+                None if _mx is None else float(_mx),
+            )
+
+    _substituicoes = []  # descrição dos "?" resolvidos, para mostrar ao utilizador
     try:
         for _coluna, _chave_min, _chave_max in _limites:
-            _minimo = _numero_ou_none(_valores[_chave_min])
-            _maximo = _numero_ou_none(_valores[_chave_max])
+            _ext_min, _ext_max = _extremos.get(_coluna, (None, None))
+            _minimo = _numero_ou_none(_valores[_chave_min], _ext_min)
+            _maximo = _numero_ou_none(_valores[_chave_max], _ext_max)
+            for _chave, _valor, _nome in (
+                (_chave_min, _minimo, "mín."),
+                (_chave_max, _maximo, "máx."),
+            ):
+                if (_valores[_chave] or "").strip() == "?":
+                    _substituicoes.append(
+                        f"{_coluna} {_nome} = "
+                        + ("—" if _valor is None else f"{_valor:.2f} €")
+                    )
             if _minimo is not None:
                 _condicoes.append(f"{_coluna} >= %s")
                 _parametros.append(_minimo)
@@ -517,7 +594,7 @@ def _(
             True,
             mo.md(
                 "**Limite numérico inválido.** Introduza apenas números "
-                "(ex.: `100` ou `100.50`) nos campos de crédito, débito e saldo."
+                "(ex.: `100` ou `100.50`) ou `?` nos campos de crédito, débito e saldo."
             ),
         )
 
@@ -549,7 +626,14 @@ def _(
         label=f"Movimentos ({len(_linhas)} registo(s)) — selecione linhas para purgar",
         selection="multi",
     )
-    resultado_tabela
+    mo.vstack(
+        [
+            mo.md("**`?` substituído por:** " + "; ".join(_substituicoes))
+            if _substituicoes
+            else mo.md(""),
+            resultado_tabela,
+        ]
+    )
     return (resultado_tabela,)
 
 
