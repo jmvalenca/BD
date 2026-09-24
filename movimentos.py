@@ -9,19 +9,65 @@
 import marimo
 
 __generated_with = "0.24.2"
-app = marimo.App(width="medium")
+app = marimo.App(width="medium", app_title="Contabilidade · Arminda Melo RL")
 
 
 @app.cell
 def _():
     import os
-    import re
 
     import marimo as mo
     import psycopg
-    from psycopg import sql
 
-    return mo, os, psycopg, re, sql
+    return mo, os, psycopg
+
+
+@app.cell
+def _(mo):
+    # Cabeçalho da aplicação (escritório + nome da app + data de hoje)
+    import datetime as _dt
+
+    _MESES = (
+        "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+        "agosto", "setembro", "outubro", "novembro", "dezembro",
+    )
+    _hoje = _dt.date.today()
+    _data_hoje = f"{_hoje.day} de {_MESES[_hoje.month - 1]} de {_hoje.year}"
+
+    mo.Html(
+        f"""
+        <div style="
+            display:flex; align-items:center; gap:1.25rem; flex-wrap:wrap;
+            padding:1.4rem 1.6rem; margin-bottom:0.5rem;
+            border-radius:14px;
+            background:linear-gradient(135deg, #0f2b3d 0%, #16475b 60%, #1f6f6b 100%);
+            color:#f4f1ea;
+            box-shadow:0 6px 18px rgba(15,43,61,0.25);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;">
+          <div style="
+              flex:0 0 auto; width:64px; height:64px; border-radius:50%;
+              display:flex; align-items:center; justify-content:center;
+              border:2px solid #d4af6a; color:#d4af6a;
+              font-family: Georgia, 'Times New Roman', serif;
+              font-size:1.55rem; letter-spacing:0.04em;">AM</div>
+          <div style="flex:1 1 220px; min-width:0;">
+            <div style="
+                font-size:0.78rem; letter-spacing:0.22em; text-transform:uppercase;
+                color:#d4af6a; font-weight:600;">Arminda Melo RL</div>
+            <div style="
+                font-family: Georgia, 'Times New Roman', serif;
+                font-size:2.1rem; line-height:1.15; margin:0.15rem 0 0.3rem;">
+              Contabilidade</div>
+            <div style="font-size:0.92rem; opacity:0.85;">
+              Registo de movimentos e saldos por cliente</div>
+          </div>
+          <div style="
+              flex:0 0 auto; font-size:0.85rem; opacity:0.85; text-align:right;">
+            {_data_hoje}</div>
+        </div>
+        """
+    )
+    return
 
 
 @app.cell
@@ -40,8 +86,6 @@ def _(mo):
     login_form = (
         mo.md(
             """
-            # Movimentos
-
             ## Autenticação
 
             {utilizador}
@@ -778,85 +822,6 @@ def _(
     else:
         mensagem_purga = mo.md("")
     mensagem_purga
-    return
-
-
-@app.cell
-def _(mo, utilizador):
-    # 9) Criar novo utilizador — só disponível para o utilizador "postgres".
-    # O novo utilizador não recebe nenhum privilégio explícito: fica apenas com
-    # o que já está concedido a PUBLIC (hoje: SELECT + INSERT em "movimentos").
-    if utilizador == "postgres":
-        criar_utilizador_form = (
-            mo.md(
-                """
-                ## Criar novo utilizador
-
-                Fica com os mesmos privilégios de PUBLIC nesta base de dados
-                (atualmente: consultar e acrescentar registos em `movimentos`,
-                sem poder alterar nem apagar).
-
-                {nome}
-
-                {password}
-
-                {confirmar_password}
-                """
-            )
-            .batch(
-                nome=mo.ui.text(value="", label="Nome de utilizador"),
-                password=mo.ui.text(value="", label="Password", kind="password"),
-                confirmar_password=mo.ui.text(
-                    value="", label="Confirmar password", kind="password"
-                ),
-            )
-            .form(submit_button_label="Criar utilizador")
-        )
-    else:
-        criar_utilizador_form = None
-
-    # Expressão final incondicional (ver nota na secção de purga acima).
-    criar_utilizador_form if criar_utilizador_form is not None else mo.md(
-        "_Só o utilizador **postgres** pode criar novos utilizadores._"
-    )
-    return (criar_utilizador_form,)
-
-
-@app.cell
-def _(criar_utilizador_form, mo, params, psycopg, re, sql):
-    mo.stop(criar_utilizador_form is None or criar_utilizador_form.value is None)
-
-    _nome = criar_utilizador_form.value["nome"].strip()
-    _password = criar_utilizador_form.value["password"]
-    _confirmar = criar_utilizador_form.value["confirmar_password"]
-
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", _nome):
-        mo.stop(
-            True,
-            mo.md(
-                "**Nome de utilizador inválido.** Use apenas letras, números e "
-                "underscore, começando por uma letra ou underscore."
-            ),
-        )
-
-    if not _password or _password != _confirmar:
-        mo.stop(True, mo.md("**As passwords não coincidem (ou estão vazias).**"))
-
-    try:
-        with psycopg.connect(**params, dbname="postgres", autocommit=True) as conn_role:
-            conn_role.execute(
-                sql.SQL("CREATE ROLE {} WITH LOGIN PASSWORD %s").format(
-                    sql.Identifier(_nome)
-                ),
-                (_password,),
-            )
-        mensagem_utilizador = mo.md(
-            f"Utilizador **{_nome}** criado com sucesso, com os privilégios de "
-            "PUBLIC (herdados automaticamente)."
-        )
-    except psycopg.errors.DuplicateObject:
-        mensagem_utilizador = mo.md(f"⚠️ Já existe um utilizador chamado **{_nome}**.")
-    mensagem_utilizador
     return
 
 
