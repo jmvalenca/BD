@@ -9,7 +9,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Cria a BD "contabilidade" + tabela movimentos + trigger de saldo
       # (só corre na 1.ª inicialização, quando o volume está vazio)
-      - ./criar_bd.sql:/docker-entrypoint-initdb.d/01_criar_bd.sql:ro
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
