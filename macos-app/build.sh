@@ -8,7 +8,9 @@ APP="Movimentos.app"
 mkdir -p "$APP/Contents/MacOS"
 cp Info.plist "$APP/Contents/"
 
-swiftc -O -o "$APP/Contents/MacOS/Movimentos" MovimentosApp.swift
+# -parse-as-library: necessário porque usamos @main num único ficheiro
+# (sem esta flag o swiftc trata o ficheiro como script e rejeita o @main).
+swiftc -parse-as-library -O -o "$APP/Contents/MacOS/Movimentos" MovimentosApp.swift
 
 echo "✅ Criado $APP"
 echo "   Teste:  open ./Movimentos.app"
