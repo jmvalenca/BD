@@ -1,6 +1,0 @@
-id,cliente,descricao,credito (€),debito (€),data & hora,saldo (€),correção
-1,xuxas,pagamento de luvas,100000.0,0.0,2026-09-21 18:28:54.916780+01:00,100000.0,False
-2,puxas,honorários,0.0,100000.0,2026-09-21 18:28:54.916780+01:00,0.0,False
-3,xuxas,pagamento de luvas,100000.0,0.0,2026-09-21 18:30:53.502712+01:00,100000.0,False
-4,xuxas,pagamento de luvas,100.0,0.0,2026-09-21 18:39:28.825374+01:00,100100.0,False
-5,puxas,coitado,20000.0,0.0,2026-09-21 18:40:40.148756+01:00,120100.0,False
