@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      # Altere a password em produção (ou use um ficheiro .env)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contabilidade}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Cria a BD "contabilidade" + tabela movimentos + trigger de saldo
+      # (só corre na 1.ª inicialização, quando o volume está vazio)
+      - ./criar_bd.sql:/docker-entrypoint-initdb.d/01_criar_bd.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+    ports:
+      - "2718:2718"   # aplicação em http://localhost:2718
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,8 @@
+.git
+__marimo__
+~/
+.DS_Store
+*.sh
+*.cmd
+*.ps1
+movimentos.csv
