@@ -20,8 +20,11 @@ services:
     environment:
       # o pg_dump precisa da password do postgres
       PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no ficheiro .env}
+      TZ: Europe/Lisbon   # backups à 01:00 hora de Lisboa
     volumes:
-      - backups:/backups
+      # pasta backups/ do projeto no Mac (fora do Docker: visível no Finder,
+      # incluída no Time Machine e não apagada por "docker compose down -v")
+      - ./backups:/backups
     depends_on:
       db:
         condition: service_healthy
@@ -40,4 +43,3 @@ services:
 
 volumes:
   pgdata:
-  backups:

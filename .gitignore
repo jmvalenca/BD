@@ -5,3 +5,4 @@ __marimo__/
 *.csv
 .env
 macos-app/Movimentos.app/
+backups/

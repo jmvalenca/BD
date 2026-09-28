@@ -7,3 +7,4 @@ __marimo__
 *.ps1
 movimentos.csv
 .env
+backups/
