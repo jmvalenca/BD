@@ -17,7 +17,7 @@ Depois abre <http://localhost:2718> e faz login com um utilizador da base de
 dados (ex.: `postgres` com a password definida em `POSTGRES_PASSWORD` no `.env`).
 
 - A base de dados `contabilidade` é criada automaticamente na 1.ª execução
-  a partir do `criar_bd.sql` (com a tabela `movimentos` e o trigger de saldo).
+  a partir do `docker/init.sql` (com a tabela `movimentos` e o trigger de saldo).
 - Os dados persistem no volume `pgdata`; `docker compose down -v` apaga tudo.
 - Para criar mais utilizadores (a app autentica-se diretamente no PostgreSQL):
 
