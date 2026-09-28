@@ -19,14 +19,29 @@ dados (ex.: `postgres` com a password definida em `POSTGRES_PASSWORD` no `.env`)
 - A base de dados `contabilidade` é criada automaticamente na 1.ª execução
   a partir do `docker/init.sql` (com a tabela `movimentos` e o trigger de saldo).
 - Os dados persistem no volume `pgdata`; `docker compose down -v` apaga tudo.
-- Para criar mais utilizadores (a app autentica-se diretamente no PostgreSQL):
+- Para criar e remover utilizadores (a app autentica-se diretamente no
+  PostgreSQL), use os scripts da pasta `gestao/` — ver abaixo.
+
+## Gestão de utilizadores
+
+Com os containers a correr, na pasta do projeto:
 
 ```bash
-docker compose exec db psql -U postgres -c \
-  "CREATE ROLE contabilidade LOGIN PASSWORD 'segredo'"
-docker compose exec db psql -U postgres -d contabilidade -c \
-  "GRANT SELECT, INSERT, UPDATE, DELETE ON movimentos TO contabilidade"
+gestao/criar_utilizador.sh maria      # pede a password (2x, mín. 8 caracteres)
+gestao/remover_utilizador.sh maria    # pede confirmação (ou --sim)
 ```
+
+- O novo utilizador só tem os privilégios públicos: pode ligar-se, mas não
+  vê a tabela `movimentos` nem é superutilizador. Para lhe dar acesso:
+
+  ```bash
+  docker compose exec db psql -U postgres -d contabilidade -c \
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON movimentos TO maria"
+  ```
+
+- Ao remover, as sessões abertas do utilizador são terminadas, os seus
+  privilégios são retirados e as tabelas que tenha criado passam para o
+  `postgres` (os dados não se perdem).
 
 ## Backups
 
