@@ -1,20 +1,30 @@
 services:
   db:
-    image: postgres:17
+    build: ./docker
     restart: unless-stopped
     environment:
       # Altere a password em produção (ou use um ficheiro .env)
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contabilidade}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Cria a BD "contabilidade" + tabela movimentos + trigger de saldo
-      # (só corre na 1.ª inicialização, quando o volume está vazio)
-      - ./docker/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  backup:
+    build: ./docker
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/backup.sh"]
+    environment:
+      # o pg_dump precisa da password do postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:-contabilidade}
+    volumes:
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
 
   app:
     build: .
@@ -30,3 +40,4 @@ services:
 
 volumes:
   pgdata:
+  backups:
