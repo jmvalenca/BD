@@ -3,8 +3,8 @@ services:
     build: ./docker
     restart: unless-stopped
     environment:
-      # Altere a password em produção (ou use um ficheiro .env)
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contabilidade}
+      # A password vem do ficheiro .env (não versionado) — ver .env.example
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no ficheiro .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,7 +19,7 @@ services:
     entrypoint: ["/usr/local/bin/backup.sh"]
     environment:
       # o pg_dump precisa da password do postgres
-      PGPASSWORD: ${POSTGRES_PASSWORD:-contabilidade}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no ficheiro .env}
     volumes:
       - backups:/backups
     depends_on:
