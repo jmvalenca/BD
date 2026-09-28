@@ -11,6 +11,13 @@ ligando-se por SSH ao servidor onde corre o Docker.
 Requisitos: Xcode Command Line Tools (`xcode-select --install`) e acesso SSH
 por chave à máquina do servidor (`ssh-copy-id utilizador@servidor`).
 
+## Ícone
+
+O `build.sh` gera o ícone da app a partir de `icone.png` (1024×1024;
+`icone.svg` é o desenho original). Para usar outro ícone, substitua o
+`icone.png` e volte a correr `./build.sh`. Se o Dock continuar a mostrar o
+ícone antigo: `killall Dock`.
+
 ## Usar
 
 1. Abra `Movimentos.app`, confirme o **servidor** (utilizador@host) e a **pasta
