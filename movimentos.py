@@ -327,19 +327,34 @@ def _(DB_NAME, bd_pronta, form, mo, params, psycopg):
     assert bd_pronta
     inserido = form.value is not None
     if inserido:
-        with psycopg.connect(**params, dbname=DB_NAME) as conn_ins:
-            conn_ins.execute(
-                'INSERT INTO movimentos (cliente, descricao, credito, debito, "correção") '
-                "VALUES (%s, %s, %s, %s, %s)",
-                (
-                    form.value["cliente"].strip(),
-                    form.value["descricao"],
-                    form.value["credito"],
-                    form.value["debito"],
-                    form.value["correcao"],
-                ),
+        # Um campo numérico deixado vazio chega como None: conta como 0
+        # (as colunas credito/debito são NOT NULL).
+        _cliente_ins = form.value["cliente"].strip()
+        _credito_ins = form.value["credito"] or 0
+        _debito_ins = form.value["debito"] or 0
+        if not _cliente_ins:
+            mensagem = mo.md("⚠️ **Indique o cliente.** Nada foi inserido.")
+        elif _credito_ins == 0 and _debito_ins == 0:
+            mensagem = mo.md(
+                "⚠️ **Indique um valor de crédito ou de débito.** Nada foi inserido."
             )
-        mensagem = mo.md(f"Entrada inserida para **{form.value['cliente']}**.")
+        else:
+            try:
+                with psycopg.connect(**params, dbname=DB_NAME) as conn_ins:
+                    conn_ins.execute(
+                        'INSERT INTO movimentos (cliente, descricao, credito, debito, "correção") '
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (
+                            _cliente_ins,
+                            form.value["descricao"],
+                            _credito_ins,
+                            _debito_ins,
+                            form.value["correcao"],
+                        ),
+                    )
+                mensagem = mo.md(f"✅ Entrada inserida para **{_cliente_ins}**.")
+            except psycopg.Error as _erro:
+                mensagem = mo.md(f"**Erro ao inserir — nada foi inserido:** {_erro}")
     else:
         mensagem = mo.md("_Preencha o formulário e carregue em **Inserir**._")
     mensagem
