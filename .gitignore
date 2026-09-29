@@ -6,3 +6,6 @@ __marimo__/
 .env
 macos-app/Movimentos.app/
 backups/
+
+# Imagens de disco geradas (macos-app/criar_dmg.sh)
+*.dmg
