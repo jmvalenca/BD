@@ -19,7 +19,7 @@ final class Manager: ObservableObject {
     init() {
         let d = UserDefaults.standard
         destino = d.string(forKey: "destino") ?? "josevalenca@mbp-de-jose"
-        repoDir = d.string(forKey: "repoDir") ?? "~/Library/CloudStorage/Dropbox/BD"
+        repoDir = d.string(forKey: "repoDir") ?? "~/Public/BD"
     }
 
     private func sshProcess(_ args: [String]) -> Process {
