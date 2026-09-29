@@ -577,8 +577,10 @@ def _(
     _parametros = []
 
     if _cliente:
-        _condicoes.append("cliente ILIKE %s")
-        _parametros.append(f"%{_cliente}%")
+        # Correspondência exata do nome (sem distinguir maiúsculas), igual à
+        # usada pelo trigger: o saldo mostrado é sempre de um único cliente.
+        _condicoes.append("lower(cliente) = lower(%s)")
+        _parametros.append(_cliente)
     if _so_correcoes:
         _condicoes.append('"correção" = TRUE')
 
