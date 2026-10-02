@@ -17,6 +17,12 @@ Para o comando `docker compose` funcionar, diga ao Docker onde está o plugin
 }
 ```
 
+Se o Docker Desktop esteve instalado, o `~/.docker/config.json` pode ter
+ficado com `"credsStore": "desktop"`, o que faz falhar o download das imagens
+(`docker-credential-desktop: executable file not found`). O `arrancar.sh`
+retira essa entrada automaticamente (guardando uma cópia em
+`~/.docker/config.json.bak-docker-desktop`).
+
 Para o Colima arrancar sozinho quando entra no Mac (assim os containers e
 o backup diário voltam a correr sem abrir a app):
 

@@ -25,6 +25,32 @@ else
 fi
 [ -f .env ] || erro "falta o ficheiro .env (cp .env.example .env e defina a password)."
 
+# Resto do Docker Desktop: o ~/.docker/config.json fica com
+# "credsStore": "desktop", e sem o Docker Desktop o docker falha a descarregar
+# imagens (docker-credential-desktop: executable file not found). Retirar essa
+# entrada (com cópia de segurança em config.json.bak-docker-desktop).
+CFG="$HOME/.docker/config.json"
+if [ -f "$CFG" ] && grep -q '"desktop"' "$CFG" && ! command -v docker-credential-desktop >/dev/null; then
+    echo "A retirar a referência ao Docker Desktop de $CFG…"
+    cp "$CFG" "$CFG.bak-docker-desktop"
+    python3 - "$CFG" <<'PY' || erro "não consegui corrigir $CFG; retire à mão a linha \"credsStore\": \"desktop\"."
+import json, sys
+p = sys.argv[1]
+with open(p) as f:
+    c = json.load(f)
+if c.get("credsStore") == "desktop":
+    del c["credsStore"]
+helpers = {k: v for k, v in c.get("credHelpers", {}).items() if v != "desktop"}
+if "credHelpers" in c:
+    c["credHelpers"] = helpers
+if str(c.get("currentContext", "")).startswith("desktop"):
+    del c["currentContext"]
+with open(p, "w") as f:
+    json.dump(c, f, indent=2)
+    f.write("\n")
+PY
+fi
+
 if ! colima status >/dev/null 2>&1; then
     echo "A arrancar o Colima…"
     colima start
