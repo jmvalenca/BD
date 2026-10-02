@@ -1,17 +1,46 @@
-# Arrancar a aplicação com Docker
+# Arrancar a aplicação com Docker (Colima)
 
-Na 1.ª vez, crie o ficheiro `.env` com a password do PostgreSQL
+O Docker corre no **Colima** (uma máquina virtual leve, sem o Docker Desktop).
+
+## Instalação (uma vez)
+
+```bash
+brew install colima docker docker-compose
+```
+
+Para o comando `docker compose` funcionar, diga ao Docker onde está o plugin
+(o Homebrew mostra esta indicação no fim da instalação). Em `~/.docker/config.json`:
+
+```json
+{
+  "cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]
+}
+```
+
+Para o Colima arrancar sozinho quando entra no Mac (assim os containers e
+o backup diário voltam a correr sem abrir a app):
+
+```bash
+brew services start colima
+```
+
+Na 1.ª vez, crie também o ficheiro `.env` com a password do PostgreSQL
 (o `.env` não vai para o Git):
 
 ```bash
 cp .env.example .env   # e edite a password
 ```
 
-Depois arranque os containers (PostgreSQL + backup + servidor marimo) com:
+## Arrancar
 
 ```bash
-docker compose up --build -d
+./arrancar.sh
 ```
+
+O `arrancar.sh` arranca o Colima (se ainda não estiver a correr) e depois os
+containers (PostgreSQL + backup + servidor marimo) com
+`docker compose up -d --build`. É o mesmo script que a app macOS usa.
+Para parar: `docker compose stop` (e, se quiser, `colima stop`).
 
 Depois abre <http://localhost:2718> e faz login com um utilizador da base de
 dados (ex.: `postgres` com a password definida em `POSTGRES_PASSWORD` no `.env`).
@@ -52,7 +81,7 @@ a partir da **01:00 (hora de Lisboa)** para a pasta **`backups/`** do projeto
 - Um ficheiro por dia: `backups/contabilidade_AAAA-MM-DD.sql.gz`; são
   mantidos os 30 mais recentes.
 - Se o Mac estava desligado/a dormir à 01:00, o backup do dia é feito logo
-  que o Docker volte a arrancar.
+  que o Colima volte a arrancar.
 - Um backup só é gravado se o `pg_dump` correr sem erros; em caso de falha
   tenta de novo a cada 15 minutos. Ver o registo com
   `docker compose logs backup`.
@@ -68,3 +97,45 @@ gunzip -c backups/contabilidade_AAAA-MM-DD.sql.gz | \
   docker compose exec -T db psql -U postgres -d contabilidade
 docker compose start app
 ```
+
+## Migrar do Docker Desktop para o Colima
+
+Os dados da base de dados (volume `pgdata`) ficam dentro da máquina virtual
+do Docker Desktop e **não passam sozinhos** para o Colima. Por isso:
+
+1. **Ainda com o Docker Desktop a correr**, na pasta do projeto, exporte os
+   utilizadores e a base de dados:
+
+   ```bash
+   docker compose exec -T db pg_dumpall -U postgres --roles-only > backups/migracao_utilizadores.sql
+   docker compose exec -T db pg_dump -U postgres contabilidade | gzip > backups/migracao_contabilidade.sql.gz
+   gzip -t backups/migracao_contabilidade.sql.gz && echo OK
+   docker compose down          # SEM -v
+   ```
+
+2. Feche o Docker Desktop e desative "Start Docker Desktop when you sign in"
+   (ou desinstale-o).
+
+3. Instale o Colima (ver **Instalação** acima) e arranque:
+
+   ```bash
+   ./arrancar.sh
+   ```
+
+   Fica uma base de dados `contabilidade` nova e vazia.
+
+4. Reponha os utilizadores e os dados:
+
+   ```bash
+   docker compose exec -T db psql -U postgres < backups/migracao_utilizadores.sql
+   docker compose stop app
+   docker compose exec db dropdb -U postgres contabilidade
+   docker compose exec db createdb -U postgres contabilidade
+   gunzip -c backups/migracao_contabilidade.sql.gz | \
+     docker compose exec -T db psql -U postgres -d contabilidade
+   docker compose start app
+   ```
+
+   (o aviso `role "postgres" already exists` é normal.)
+
+5. Abra <http://localhost:2718> e confirme os movimentos e os saldos.
