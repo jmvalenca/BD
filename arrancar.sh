@@ -31,7 +31,7 @@ fi
 # entrada (com cópia de segurança em config.json.bak-docker-desktop).
 CFG="$HOME/.docker/config.json"
 if [ -f "$CFG" ] && grep -q '"desktop"' "$CFG" && ! command -v docker-credential-desktop >/dev/null; then
-    echo "A retirar a referência ao Docker Desktop de $CFG…"
+    echo "A retirar a referência ao Docker Desktop de $CFG"
     cp "$CFG" "$CFG.bak-docker-desktop"
     python3 - "$CFG" <<'PY' || erro "não consegui corrigir $CFG; retire à mão a linha \"credsStore\": \"desktop\"."
 import json, sys
