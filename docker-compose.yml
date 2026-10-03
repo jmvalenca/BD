@@ -29,12 +29,33 @@ services:
       db:
         condition: service_healthy
 
+  # Relatórios periódicos (CSV por e-mail via Gmail) — ver relatorios.py
+  relatorios:
+    build: .
+    restart: unless-stopped
+    command: ["python", "relatorios.py"]
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no ficheiro .env}
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      HORA_ENVIO: ${HORA_ENVIO:-7}
+      TZ: Europe/Lisbon
+    depends_on:
+      db:
+        condition: service_healthy
+
   app:
     build: .
     restart: unless-stopped
     environment:
       PGHOST: db
       PGPORT: 5432
+      # para o botão "Enviar agora" dos relatórios
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      TZ: Europe/Lisbon
     ports:
       - "2718:2718"   # aplicação em http://localhost:2718
     depends_on:

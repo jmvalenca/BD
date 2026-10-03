@@ -64,3 +64,33 @@ CREATE TRIGGER trg_calcular_saldo
 -- acrescentar (append) novos registos — nunca UPDATE nem DELETE.
 REVOKE ALL ON movimentos FROM PUBLIC;
 GRANT SELECT, INSERT ON movimentos TO PUBLIC;
+
+-- Relatórios periódicos (CSV por e-mail), enviados pelo serviço
+-- "relatorios" (relatorios.py, que também cria esta tabela se faltar).
+-- Só o "postgres" lhe acede: um relatório envia dados para fora.
+CREATE TABLE relatorios (
+    id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nome              TEXT        NOT NULL,
+    frequencia        TEXT        NOT NULL
+                      CHECK (frequencia IN ('diario', 'semanal', 'mensal')),
+    destinatario      TEXT        NOT NULL,
+    cliente           TEXT,
+    apenas_correcoes  BOOLEAN     NOT NULL DEFAULT FALSE,
+    credito_min       NUMERIC(14,2),
+    credito_max       NUMERIC(14,2),
+    debito_min        NUMERIC(14,2),
+    debito_max        NUMERIC(14,2),
+    saldo_min         NUMERIC(14,2),
+    saldo_max         NUMERIC(14,2),
+    ativo             BOOLEAN     NOT NULL DEFAULT TRUE,
+    criado_por        TEXT        NOT NULL DEFAULT current_user,
+    criado_em         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ultimo_periodo    DATE,
+    ultimo_envio      TIMESTAMPTZ,
+    ultimo_erro       TEXT
+);
+COMMENT ON COLUMN relatorios.destinatario IS
+    'Um ou mais endereços de e-mail, separados por vírgula';
+COMMENT ON COLUMN relatorios.ultimo_periodo IS
+    'Data de início do último período enviado (evita envios repetidos)';
+REVOKE ALL ON relatorios FROM PUBLIC;

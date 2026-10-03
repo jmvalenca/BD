@@ -1,15 +1,18 @@
-# Servidor da aplicação Movimentos (marimo + psycopg)
+# Servidor da aplicação Movimentos (marimo + psycopg).
+# A mesma imagem corre também o serviço de relatórios (relatorios.py).
 FROM python:3.14-slim
 
 WORKDIR /app
 
 # Dependências declaradas no cabeçalho do movimentos.py
+# (tzdata: fuso Europe/Lisbon para os períodos dos relatórios)
 RUN pip install --no-cache-dir \
     "marimo>=0.24.2" \
-    "psycopg[binary]==3.3.6"
+    "psycopg[binary]==3.3.6" \
+    tzdata
 
 # Código da aplicação
-COPY movimentos.py .
+COPY movimentos.py relatorios.py ./
 
 EXPOSE 2718
 

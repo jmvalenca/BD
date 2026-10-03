@@ -34,7 +34,7 @@ Na 1.ª vez, crie também o ficheiro `.env` com a password do PostgreSQL
 (o `.env` não vai para o Git):
 
 ```bash
-cp .env.example .env   # e edite a password
+cp .env.example .env   # e edite a password (e, para relatórios, o Gmail)
 ```
 
 ## Arrancar
@@ -44,7 +44,7 @@ cp .env.example .env   # e edite a password
 ```
 
 O `arrancar.sh` arranca o Colima (se ainda não estiver a correr) e depois os
-containers (PostgreSQL + backup + servidor marimo) com
+containers (PostgreSQL + backup + relatórios + servidor marimo) com
 `docker compose up -d --build`. É o mesmo script que a app macOS usa.
 Para parar: `docker compose stop` (e, se quiser, `colima stop`).
 
@@ -78,6 +78,48 @@ gestao/remover_utilizador.sh maria    # pede confirmação (ou --sim)
   privilégios são retirados e as tabelas que tenha criado passam para o
   `postgres` (os dados não se perdem).
 
+## Relatórios periódicos por e-mail
+
+Na app, com o utilizador `postgres`, a secção **Relatórios periódicos por
+e-mail** permite criar relatórios **diários, semanais ou mensais**. Cada
+relatório gera um CSV (mesmo formato da exportação, pode ser reimportado) e
+envia-o para um ou mais endereços.
+
+- **Seleção:** por omissão, todos os movimentos do período; opcionalmente
+  só um cliente, só correções e limites de crédito/débito/saldo.
+- **Períodos** (hora de Lisboa), sempre o último período *completo*:
+  - diário → o dia anterior;
+  - semanal → semana anterior, de segunda a domingo (enviado à segunda);
+  - mensal → mês anterior (enviado no dia 1).
+- O container `relatorios` envia a partir da `HORA_ENVIO` (por omissão 07:00).
+  Se o Mac estava desligado/a dormir, o relatório em falta segue logo que o
+  Docker volte a arrancar. Um relatório novo envia logo o último período
+  completo. Cada período é enviado uma só vez (coluna `ultimo_periodo`).
+- Em caso de erro (p. ex. password errada), tenta de novo a cada 15 minutos;
+  o erro aparece na coluna **último erro** da lista e em
+  `docker compose logs relatorios`.
+- Na lista pode selecionar relatórios para **Enviar agora**,
+  **Ativar / desativar** ou **Apagar**.
+
+### Configurar o Gmail
+
+O Gmail não aceita a password normal da conta por SMTP. É preciso uma
+**palavra-passe de app**:
+
+1. Ative a verificação em 2 passos na conta Google.
+2. Em <https://myaccount.google.com/apppasswords> crie uma palavra-passe de
+   app (p. ex. "Movimentos") — são 16 letras.
+3. No `.env`:
+
+   ```bash
+   GMAIL_USER=o-seu-endereco@gmail.com
+   GMAIL_APP_PASSWORD=abcd efgh ijkl mnop
+   ```
+
+4. `docker compose up -d` (recria os containers com as novas variáveis).
+
+Os e-mails saem de `GMAIL_USER` (via `smtp.gmail.com:465`, SSL).
+
 ## Backups
 
 O container `backup` faz um backup diário da base de dados `contabilidade`
@@ -96,12 +138,12 @@ a partir da **01:00 (hora de Lisboa)** para a pasta **`backups/`** do projeto
 Repor um backup numa base de dados vazia:
 
 ```bash
-docker compose stop app      # fechar ligações à BD
+docker compose stop app relatorios   # fechar ligações à BD
 docker compose exec db dropdb -U postgres contabilidade
 docker compose exec db createdb -U postgres contabilidade
 gunzip -c backups/contabilidade_AAAA-MM-DD.sql.gz | \
   docker compose exec -T db psql -U postgres -d contabilidade
-docker compose start app
+docker compose start app relatorios
 ```
 
 ## Migrar do Docker Desktop para o Colima

@@ -19,7 +19,10 @@ def _():
     import marimo as mo
     import psycopg
 
-    return mo, os, psycopg
+    # Relatórios periódicos por e-mail (ficheiro relatorios.py, ao lado deste)
+    import relatorios as rel_lib
+
+    return mo, os, psycopg, rel_lib
 
 
 @app.cell
@@ -151,7 +154,7 @@ def _(fechar_botao, mo, os):
 
 
 @app.cell
-def _(DB_NAME, params, psycopg):
+def _(DB_NAME, params, psycopg, rel_lib):
     # 3) Preparar a base de dados (idempotente; requer privilégios de administrador
     # na primeira execução, tipicamente ligado como "postgres")
     avisos_setup = []
@@ -262,6 +265,8 @@ def _(DB_NAME, params, psycopg):
             # acrescentar (append) novos registos — nunca UPDATE nem DELETE.
             conn_ddl.execute("REVOKE ALL ON movimentos FROM PUBLIC")
             conn_ddl.execute("GRANT SELECT, INSERT ON movimentos TO PUBLIC")
+            # Tabela de configuração dos relatórios periódicos (só "postgres")
+            rel_lib.criar_tabela(conn_ddl)
     except psycopg.errors.InsufficientPrivilege:
         avisos_setup.append(
             "Sem privilégios para criar/alterar a tabela ou os seus privilégios de acesso."
@@ -839,6 +844,289 @@ def _(
     else:
         mensagem_purga = mo.md("")
     mensagem_purga
+    return
+
+
+@app.cell
+def _(mo):
+    # 9) Relatórios periódicos: estado partilhado que obriga a lista de
+    # relatórios (secção 9b) a ser relida depois de criar/alterar/apagar.
+    # A mensagem do resultado da última ação também fica em estado, para não
+    # desaparecer quando a lista (e os botões) são recriados.
+    get_versao_relatorios, set_versao_relatorios = mo.state(0)
+    get_msg_relatorios, set_msg_relatorios = mo.state("")
+    return (
+        get_msg_relatorios,
+        get_versao_relatorios,
+        set_msg_relatorios,
+        set_versao_relatorios,
+    )
+
+
+@app.cell
+def _(bd_pronta, mo, utilizador):
+    # 9a) Formulário para criar um relatório periódico (CSV por e-mail).
+    # Só o "postgres" gere relatórios: enviam dados para fora da aplicação.
+    _ = bd_pronta
+    mo.stop(
+        utilizador != "postgres",
+        mo.md(
+            "## Relatórios periódicos por e-mail\n\n"
+            "_Só o utilizador **postgres** pode gerir relatórios periódicos._"
+        ),
+    )
+    relatorio_form = (
+        mo.md(
+            """
+            ## Relatórios periódicos por e-mail
+
+            Envia automaticamente um CSV com os movimentos do **último período
+            completo** (dia anterior, semana anterior de segunda a domingo, ou
+            mês anterior), a partir das 07:00 (hora de Lisboa). Sem filtros, o
+            relatório inclui **todos os movimentos** do período.
+
+            {nome}
+
+            {frequencia}
+
+            {destinatario}
+
+            **Seleção (opcional):**
+
+            {cliente}
+
+            {apenas_correcoes}
+
+            **Crédito (€) entre:** {credito_min} e {credito_max}
+
+            **Débito (€) entre:** {debito_min} e {debito_max}
+
+            **Saldo (€) entre:** {saldo_min} e {saldo_max}
+            """
+        )
+        .batch(
+            nome=mo.ui.text(value="", label="Nome do relatório"),
+            frequencia=mo.ui.dropdown(
+                options={"Diário": "diario", "Semanal": "semanal", "Mensal": "mensal"},
+                value="Mensal",
+                label="Frequência",
+            ),
+            destinatario=mo.ui.text(
+                value="",
+                label="Enviar para (e-mail; vários separados por vírgula)",
+                full_width=True,
+            ),
+            cliente=mo.ui.text(value="", label="Cliente (vazio = todos)"),
+            apenas_correcoes=mo.ui.checkbox(value=False, label="Apenas correções"),
+            credito_min=mo.ui.text(value="", label="mín."),
+            credito_max=mo.ui.text(value="", label="máx."),
+            debito_min=mo.ui.text(value="", label="mín."),
+            debito_max=mo.ui.text(value="", label="máx."),
+            saldo_min=mo.ui.text(value="", label="mín."),
+            saldo_max=mo.ui.text(value="", label="máx."),
+        )
+        .form(submit_button_label="Criar relatório", clear_on_submit=True)
+    )
+    relatorio_form
+    return (relatorio_form,)
+
+
+@app.cell
+def _(
+    DB_NAME,
+    get_versao_relatorios,
+    mo,
+    params,
+    psycopg,
+    rel_lib,
+    relatorio_form,
+    set_versao_relatorios,
+):
+    # 9a') Gravar o relatório criado no formulário
+    mo.stop(relatorio_form.value is None)
+    from decimal import Decimal as _Dec, InvalidOperation as _InvOp
+
+    _v = relatorio_form.value
+
+    def _limite(texto):
+        texto = (texto or "").strip().replace(" ", "").replace("€", "")
+        if not texto:
+            return None
+        if "," in texto and "." in texto:
+            texto = texto.replace(".", "").replace(",", ".")
+        return _Dec(texto.replace(",", "."))
+
+    try:
+        _nome_rel = _v["nome"].strip()
+        if not _nome_rel:
+            raise ValueError("indique o nome do relatório")
+        _destinos = rel_lib.validar_destinatarios(_v["destinatario"])
+        try:
+            _limites_rel = {
+                f"{_c}_{_s}": _limite(_v[f"{_c}_{_s}"])
+                for _c in rel_lib.LIMITES
+                for _s in ("min", "max")
+            }
+        except _InvOp:
+            raise ValueError("limite numérico inválido (use p. ex. 100 ou 100,50)")
+        with psycopg.connect(**params, dbname=DB_NAME) as _conn_rel:
+            _conn_rel.execute(
+                "INSERT INTO relatorios (nome, frequencia, destinatario, cliente, "
+                "apenas_correcoes, credito_min, credito_max, debito_min, debito_max, "
+                "saldo_min, saldo_max) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    _nome_rel,
+                    _v["frequencia"],
+                    ", ".join(_destinos),
+                    _v["cliente"].strip() or None,
+                    _v["apenas_correcoes"],
+                    *(_limites_rel[f"{_c}_{_s}"] for _c in rel_lib.LIMITES for _s in ("min", "max")),
+                ),
+            )
+        set_versao_relatorios(get_versao_relatorios() + 1)
+        mensagem_relatorio = mo.md(
+            f"✅ Relatório **{_nome_rel}** criado. O primeiro envio (último "
+            "período completo) é feito pelo serviço de relatórios dentro de "
+            "1 minuto (ou a partir das 07:00)."
+        )
+    except ValueError as _erro:
+        mensagem_relatorio = mo.md(f"⚠️ **Relatório não criado:** {_erro}.")
+    except psycopg.Error as _erro:
+        mensagem_relatorio = mo.md(f"**Erro ao gravar o relatório:** {_erro}")
+    mensagem_relatorio
+    return
+
+
+@app.cell
+def _(
+    DB_NAME,
+    get_msg_relatorios,
+    get_versao_relatorios,
+    mo,
+    params,
+    psycopg,
+    rel_lib,
+    utilizador,
+):
+    # 9b) Lista dos relatórios configurados (selecione para ativar, enviar ou apagar)
+    _ = get_versao_relatorios()
+    mo.stop(utilizador != "postgres")
+    from psycopg.rows import dict_row as _dict_row
+
+    with psycopg.connect(**params, dbname=DB_NAME, row_factory=_dict_row) as _conn_l:
+        _rels = _conn_l.execute("SELECT * FROM relatorios ORDER BY id").fetchall()
+
+    def _quando(valor):
+        return valor.astimezone(rel_lib.FUSO).strftime("%Y-%m-%d %H:%M") if valor else "—"
+
+    relatorios_tabela = mo.ui.table(
+        [
+            {
+                "id": _r["id"],
+                "nome": _r["nome"],
+                "frequência": rel_lib.FREQUENCIAS[_r["frequencia"]],
+                "enviar para": _r["destinatario"],
+                "seleção": rel_lib.descrever_filtros(_r),
+                "ativo": "sim" if _r["ativo"] else "não",
+                "último período": (
+                    rel_lib.descrever_periodo(
+                        _r["frequencia"],
+                        _r["ultimo_periodo"],
+                        rel_lib.fim_do_periodo(_r["frequencia"], _r["ultimo_periodo"]),
+                    )
+                    if _r["ultimo_periodo"]
+                    else "—"
+                ),
+                "último envio": _quando(_r["ultimo_envio"]),
+                "último erro": _r["ultimo_erro"] or "",
+            }
+            for _r in _rels
+        ],
+        label=f"Relatórios configurados ({len(_rels)})",
+        selection="multi",
+    )
+    mo.vstack(
+        [
+            mo.md(get_msg_relatorios()),
+            relatorios_tabela
+            if _rels
+            else mo.md("_Ainda não há relatórios configurados._"),
+        ]
+    )
+    return (relatorios_tabela,)
+
+
+@app.cell
+def _(mo, relatorios_tabela):
+    # 9c) Ações sobre os relatórios selecionados na tabela acima
+    _sel = relatorios_tabela.value or []
+    mo.stop(
+        not _sel,
+        mo.md("_Selecione relatórios na tabela para os enviar já, ativar/desativar ou apagar._"),
+    )
+    enviar_rel_botao = mo.ui.run_button(label="✉️ Enviar agora (último período)")
+    alternar_rel_botao = mo.ui.run_button(label="⏯ Ativar / desativar")
+    apagar_rel_botao = mo.ui.run_button(label="🗑 Apagar", kind="danger")
+    mo.vstack(
+        [
+            mo.md(f"**{len(_sel)}** relatório(s) selecionado(s):"),
+            mo.hstack(
+                [enviar_rel_botao, alternar_rel_botao, apagar_rel_botao], justify="start"
+            ),
+        ]
+    )
+    return alternar_rel_botao, apagar_rel_botao, enviar_rel_botao
+
+
+@app.cell
+def _(
+    DB_NAME,
+    alternar_rel_botao,
+    apagar_rel_botao,
+    enviar_rel_botao,
+    get_versao_relatorios,
+    mo,
+    params,
+    psycopg,
+    rel_lib,
+    relatorios_tabela,
+    set_msg_relatorios,
+    set_versao_relatorios,
+):
+    # 9d) Executa a ação escolhida. "Enviar agora" envia o último período
+    # completo e regista-o, para o serviço não o voltar a enviar.
+    from psycopg.rows import dict_row as _dict_row2
+
+    _ids_rel = [_l["id"] for _l in (relatorios_tabela.value or [])]
+    _linhas_msg = []
+    if enviar_rel_botao.value:
+        with psycopg.connect(**params, dbname=DB_NAME, row_factory=_dict_row2) as _c:
+            for _r in _c.execute(
+                "SELECT * FROM relatorios WHERE id = ANY(%s) ORDER BY id", (_ids_rel,)
+            ).fetchall():
+                try:
+                    _n, _per = rel_lib.enviar_relatorio(_c, _r)
+                    _linhas_msg.append(
+                        f"✅ **{_r['nome']}** ({_per}): {_n} movimento(s) enviados "
+                        f"para {_r['destinatario']}."
+                    )
+                except Exception as _erro:  # noqa: BLE001
+                    _c.rollback()
+                    _linhas_msg.append(f"❌ **{_r['nome']}**: {_erro}")
+    elif alternar_rel_botao.value:
+        with psycopg.connect(**params, dbname=DB_NAME) as _c:
+            _c.execute(
+                "UPDATE relatorios SET ativo = NOT ativo WHERE id = ANY(%s)", (_ids_rel,)
+            )
+        _linhas_msg.append(f"{len(_ids_rel)} relatório(s) ativado(s)/desativado(s).")
+    elif apagar_rel_botao.value:
+        with psycopg.connect(**params, dbname=DB_NAME) as _c:
+            _c.execute("DELETE FROM relatorios WHERE id = ANY(%s)", (_ids_rel,))
+        _linhas_msg.append(f"{len(_ids_rel)} relatório(s) apagado(s).")
+
+    if _linhas_msg:
+        set_msg_relatorios("\n\n".join(_linhas_msg))
+        set_versao_relatorios(get_versao_relatorios() + 1)
     return
 
 

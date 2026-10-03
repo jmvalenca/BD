@@ -1,7 +1,7 @@
 #!/bin/bash
 # Arranca a aplicação Movimentos neste Mac:
 #   1. o Colima (a máquina virtual onde corre o Docker), se ainda não estiver ativo;
-#   2. os containers (PostgreSQL + backup + marimo) com docker compose.
+#   2. os containers (PostgreSQL + backup + relatórios + marimo) com docker compose.
 #
 # Usado pela app macOS (modo local, e no modo remoto por SSH), mas também
 # pode ser corrido à mão:  ./arrancar.sh
