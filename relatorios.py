@@ -48,6 +48,7 @@ COLUNAS_CSV = [
     "descricao",
     "credito (€)",
     "debito (€)",
+    "entrada",
     "data & hora",
     "saldo (€)",
     "correção",
@@ -71,6 +72,8 @@ CREATE TABLE IF NOT EXISTS relatorios (
     debito_max        NUMERIC(14,2),
     saldo_min         NUMERIC(14,2),
     saldo_max         NUMERIC(14,2),
+    entrada_min       DATE,
+    entrada_max       DATE,
     ativo             BOOLEAN     NOT NULL DEFAULT TRUE,
     criado_por        TEXT        NOT NULL DEFAULT current_user,
     criado_em         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -84,13 +87,46 @@ COMMENT ON COLUMN relatorios.destinatario IS
     'Um ou mais endereços de e-mail, separados por vírgula';
 COMMENT ON COLUMN relatorios.ultimo_periodo IS
     'Data de início do último período enviado (evita envios repetidos)';
+-- tabelas criadas antes do filtro por data de entrada
+ALTER TABLE relatorios ADD COLUMN IF NOT EXISTS entrada_min DATE;
+ALTER TABLE relatorios ADD COLUMN IF NOT EXISTS entrada_max DATE;
 REVOKE ALL ON relatorios FROM PUBLIC;
+"""
+
+# Coluna "entrada" da tabela movimentos: data da transação a que o movimento
+# se refere. Nunca pode ser posterior à data do registo ("data&hora", em hora
+# de Lisboa). Idempotente: acrescenta a coluna a bases de dados antigas e
+# preenche-a, nos movimentos já existentes, com a data do registo.
+SQL_ENTRADA = """
+ALTER TABLE movimentos ADD COLUMN IF NOT EXISTS entrada DATE;
+UPDATE movimentos
+   SET entrada = ("data&hora" AT TIME ZONE 'Europe/Lisbon')::date
+ WHERE entrada IS NULL;
+ALTER TABLE movimentos
+    ALTER COLUMN entrada SET DEFAULT (now() AT TIME ZONE 'Europe/Lisbon')::date,
+    ALTER COLUMN entrada SET NOT NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'movimentos_entrada_anterior_ao_registo') THEN
+        ALTER TABLE movimentos ADD CONSTRAINT movimentos_entrada_anterior_ao_registo
+            CHECK (entrada <= ("data&hora" AT TIME ZONE 'Europe/Lisbon')::date);
+    END IF;
+END $$;
+COMMENT ON COLUMN movimentos.entrada IS
+    'Data da transação a que o movimento se refere (não posterior à data do registo)';
+CREATE INDEX IF NOT EXISTS idx_movimentos_entrada ON movimentos (entrada);
 """
 
 
 def criar_tabela(conn):
     """Cria a tabela "relatorios", se não existir (idempotente)."""
     conn.execute(SQL_TABELA)
+
+
+def garantir_coluna_entrada(conn):
+    """Acrescenta a coluna "entrada" aos movimentos, se faltar (idempotente)."""
+    conn.execute(SQL_ENTRADA)
 
 
 # ---------------------------------------------------------------- períodos
@@ -133,6 +169,26 @@ def descrever_periodo(frequencia, inicio, fim):
 # ----------------------------------------------------------- validação
 
 
+def ler_data(texto):
+    """Converte "2026-10-05", "05/10/2026", "5-10-2026" ou "05.10.2026" numa
+    data. Texto vazio devolve None; formato inválido lança ValueError."""
+    texto = (texto or "").strip()
+    if not texto:
+        return None
+    for formato in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d"):
+        try:
+            return dt.datetime.strptime(texto, formato).date()
+        except ValueError:
+            pass
+    # "2026-10-05 14:30:00" (p. ex. de um CSV exportado): fica só a data
+    try:
+        return dt.datetime.fromisoformat(texto).date()
+    except ValueError:
+        raise ValueError(
+            f"data inválida: {texto!r} (use AAAA-MM-DD ou DD/MM/AAAA)"
+        ) from None
+
+
 def validar_destinatarios(texto):
     """Devolve a lista de endereços (separados por , ou ;) ou lança ValueError."""
     enderecos = [e.strip() for e in re.split(r"[,;]", texto or "") if e.strip()]
@@ -166,8 +222,15 @@ def selecionar(conn, rel, inicio, fim):
             if valor is not None:
                 condicoes.append(f"{coluna} {operador} %s")
                 parametros.append(valor)
+    if rel.get("entrada_min") is not None:
+        condicoes.append("entrada >= %s")
+        parametros.append(rel["entrada_min"])
+    if rel.get("entrada_max") is not None:
+        condicoes.append("entrada <= %s")
+        parametros.append(rel["entrada_max"])
     sql = (
-        'SELECT id, cliente, descricao, credito, debito, "data&hora", saldo, "correção" '
+        "SELECT id, cliente, descricao, credito, debito, entrada, "
+        '"data&hora", saldo, "correção" '
         "FROM movimentos WHERE " + " AND ".join(condicoes) + ' ORDER BY "data&hora", id'
     )
     with conn.cursor(row_factory=tuple_row) as cur:
@@ -180,7 +243,7 @@ def gerar_csv(linhas):
     saida = io.StringIO()
     escritor = csv.writer(saida)
     escritor.writerow(COLUNAS_CSV)
-    for rid, cliente, descricao, credito, debito, data_hora, saldo, correcao in linhas:
+    for rid, cliente, descricao, credito, debito, entrada, data_hora, saldo, correcao in linhas:
         escritor.writerow(
             [
                 rid,
@@ -188,6 +251,7 @@ def gerar_csv(linhas):
                 descricao or "",
                 f"{credito:.2f}",
                 f"{debito:.2f}",
+                entrada.isoformat(),
                 data_hora.astimezone(FUSO).strftime("%Y-%m-%d %H:%M:%S"),
                 f"{saldo:.2f}",
                 correcao,
@@ -210,6 +274,13 @@ def descrever_filtros(rel):
             partes.append(f"{coluna} ≥ {mn} €")
         elif mx is not None:
             partes.append(f"{coluna} ≤ {mx} €")
+    dmn, dmx = rel.get("entrada_min"), rel.get("entrada_max")
+    if dmn is not None and dmx is not None:
+        partes.append(f"entrada entre {dmn:%d/%m/%Y} e {dmx:%d/%m/%Y}")
+    elif dmn is not None:
+        partes.append(f"entrada desde {dmn:%d/%m/%Y}")
+    elif dmx is not None:
+        partes.append(f"entrada até {dmx:%d/%m/%Y}")
     return "; ".join(partes) if partes else "todos os movimentos"
 
 
@@ -339,6 +410,7 @@ def main():
             if conn is None or conn.closed:
                 # PGHOST, PGUSER, PGPASSWORD vêm do ambiente
                 conn = psycopg.connect(dbname="contabilidade", row_factory=dict_row)
+                garantir_coluna_entrada(conn)
                 criar_tabela(conn)
                 conn.commit()
             if dt.datetime.now(FUSO).hour >= hora_envio:

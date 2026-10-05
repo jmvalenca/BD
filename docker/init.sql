@@ -18,12 +18,19 @@ CREATE TABLE movimentos (
     debito      NUMERIC(14,2)  NOT NULL DEFAULT 0 CHECK (debito  >= 0),
     "data&hora" TIMESTAMPTZ    NOT NULL DEFAULT now(),
     saldo       NUMERIC(14,2)  NOT NULL DEFAULT 0,
-    "correção"  BOOLEAN        NOT NULL DEFAULT FALSE
+    "correção"  BOOLEAN        NOT NULL DEFAULT FALSE,
+    entrada     DATE           NOT NULL
+                DEFAULT (now() AT TIME ZONE 'Europe/Lisbon')::date,
+    -- a data da transação nunca é posterior à data do registo (hora de Lisboa)
+    CONSTRAINT movimentos_entrada_anterior_ao_registo
+        CHECK (entrada <= ("data&hora" AT TIME ZONE 'Europe/Lisbon')::date)
 );
 
 COMMENT ON COLUMN movimentos.credito IS 'Valor em euros (EUR)';
 COMMENT ON COLUMN movimentos.debito  IS 'Valor em euros (EUR)';
 COMMENT ON COLUMN movimentos."data&hora" IS 'Momento de criação da linha (preenchido automaticamente)';
+COMMENT ON COLUMN movimentos.entrada IS
+    'Data da transação a que o movimento se refere (não posterior à data do registo)';
 COMMENT ON COLUMN movimentos.saldo IS
     'Saldo acumulado DO CLIENTE (credito - debito) até esta linha, inclusive. Não existe saldo global.';
 
@@ -32,6 +39,9 @@ COMMENT ON COLUMN movimentos.saldo IS
 -- ("Ana", "ana" e "ANA" são o mesmo cliente), daí o lower().
 CREATE INDEX idx_movimentos_cliente
     ON movimentos (lower(cliente), "data&hora" DESC, id DESC);
+
+-- Índice para as seleções por gama de datas de entrada
+CREATE INDEX idx_movimentos_entrada ON movimentos (entrada);
 
 -- Função e trigger: calculam automaticamente o saldo de CADA CLIENTE
 -- em cada inserção: último saldo desse cliente + crédito - débito.
@@ -82,6 +92,8 @@ CREATE TABLE relatorios (
     debito_max        NUMERIC(14,2),
     saldo_min         NUMERIC(14,2),
     saldo_max         NUMERIC(14,2),
+    entrada_min       DATE,
+    entrada_max       DATE,
     ativo             BOOLEAN     NOT NULL DEFAULT TRUE,
     criado_por        TEXT        NOT NULL DEFAULT current_user,
     criado_em         TIMESTAMPTZ NOT NULL DEFAULT now(),

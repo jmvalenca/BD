@@ -199,6 +199,10 @@ def _(DB_NAME, params, psycopg, rel_lib):
                     ADD COLUMN IF NOT EXISTS "correção" BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
+            # Coluna "entrada" (data da transação, nunca posterior à data do
+            # registo); em bases de dados antigas é preenchida com a data do
+            # registo. O SQL está no relatorios.py, partilhado com o serviço.
+            rel_lib.garantir_coluna_entrada(conn_ddl)
             # Índice para encontrar depressa o último movimento de cada cliente.
             # O nome do cliente NÃO distingue maiúsculas de minúsculas
             # ("Ana", "ana" e "ANA" são o mesmo cliente), daí o lower().
@@ -288,9 +292,10 @@ def _(avisos_setup, mo):
 
 
 @app.cell
-def _(bd_pronta, mo):
+def _(bd_pronta, mo, rel_lib):
     # 4) Comando para criar um novo registo
     _ = bd_pronta
+    _hoje = rel_lib.hoje_lisboa()
     form = (
         mo.md(
             """
@@ -299,6 +304,8 @@ def _(bd_pronta, mo):
             {cliente}
 
             {descricao}
+
+            {entrada}
 
             {credito}
 
@@ -310,6 +317,10 @@ def _(bd_pronta, mo):
         .batch(
             cliente=mo.ui.text(value="", label="Cliente"),
             descricao=mo.ui.text(value="", label="Descrição"),
+            # data da transação: nunca posterior a hoje (a data do registo)
+            entrada=mo.ui.date(
+                value=_hoje, stop=_hoje, label="Data da transação (entrada)"
+            ),
             credito=mo.ui.number(
                 start=0, stop=10**12, step=0.01, value=0, label="Crédito (€)"
             ),
@@ -328,7 +339,7 @@ def _(bd_pronta, mo):
 
 
 @app.cell
-def _(DB_NAME, bd_pronta, form, mo, params, psycopg):
+def _(DB_NAME, bd_pronta, form, mo, params, psycopg, rel_lib):
     assert bd_pronta
     inserido = form.value is not None
     if inserido:
@@ -337,8 +348,18 @@ def _(DB_NAME, bd_pronta, form, mo, params, psycopg):
         _cliente_ins = form.value["cliente"].strip()
         _credito_ins = form.value["credito"] or 0
         _debito_ins = form.value["debito"] or 0
+        _entrada_ins = form.value["entrada"]
         if not _cliente_ins:
             mensagem = mo.md("⚠️ **Indique o cliente.** Nada foi inserido.")
+        elif _entrada_ins is None:
+            mensagem = mo.md(
+                "⚠️ **Indique a data da transação (entrada).** Nada foi inserido."
+            )
+        elif _entrada_ins > rel_lib.hoje_lisboa():
+            mensagem = mo.md(
+                f"⚠️ **A data da transação ({_entrada_ins:%d/%m/%Y}) não pode ser "
+                "posterior à data do registo (hoje).** Nada foi inserido."
+            )
         elif _credito_ins == 0 and _debito_ins == 0:
             mensagem = mo.md(
                 "⚠️ **Indique um valor de crédito ou de débito.** Nada foi inserido."
@@ -347,11 +368,13 @@ def _(DB_NAME, bd_pronta, form, mo, params, psycopg):
             try:
                 with psycopg.connect(**params, dbname=DB_NAME) as conn_ins:
                     conn_ins.execute(
-                        'INSERT INTO movimentos (cliente, descricao, credito, debito, "correção") '
-                        "VALUES (%s, %s, %s, %s, %s)",
+                        "INSERT INTO movimentos "
+                        '(cliente, descricao, entrada, credito, debito, "correção") '
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
                         (
                             _cliente_ins,
                             form.value["descricao"],
+                            _entrada_ins,
                             _credito_ins,
                             _debito_ins,
                             form.value["correcao"],
@@ -379,9 +402,11 @@ def _(bd_pronta, mo):
             ## Novas entradas a partir de CSV
 
             Colunas reconhecidas: `cliente` (obrigatória), `descricao`,
-            `credito`, `debito` e `correção` — com ou sem o sufixo `(€)`.
-            Separador `,` ou `;`; decimais com `.` ou `,`. As colunas `id`,
-            `data & hora` e `saldo` são ignoradas. Se alguma linha tiver
+            `entrada`, `credito`, `debito` e `correção` — com ou sem o sufixo
+            `(€)`. Separador `,` ou `;`; decimais com `.` ou `,`. A `entrada`
+            (data da transação) aceita `AAAA-MM-DD` ou `DD/MM/AAAA`, não pode
+            ser posterior a hoje e, se faltar, fica a data de hoje. As colunas
+            `id`, `data & hora` e `saldo` são ignoradas. Se alguma linha tiver
             erros, **nenhum** registo é inserido.
 
             {ficheiro}
@@ -399,7 +424,7 @@ def _(bd_pronta, mo):
 
 
 @app.cell
-def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg):
+def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg, rel_lib):
     assert bd_pronta
     import csv as _csv
     import io as _io
@@ -455,6 +480,7 @@ def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg):
             return [], ["O ficheiro não tem a coluna obrigatória **cliente**."]
 
         registos, erros = [], []
+        hoje = rel_lib.hoje_lisboa()
         for n_linha, linha in enumerate(leitor, start=2):
             def campo(nome):
                 original = colunas.get(nome)
@@ -469,6 +495,11 @@ def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg):
                 credito = _valor(campo("credito"))
                 debito = _valor(campo("debito"))
                 correcao = _booleano(campo("correcao"))
+                entrada = rel_lib.ler_data(campo("entrada"))
+                if entrada is not None and entrada > hoje:
+                    raise ValueError(
+                        f"a data de entrada {entrada:%d/%m/%Y} é posterior a hoje"
+                    )
             except _InvalidOperation:
                 erros.append(f"Linha {n_linha}: valor numérico inválido")
                 continue
@@ -476,7 +507,7 @@ def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg):
                 erros.append(f"Linha {n_linha}: {erro}")
                 continue
             registos.append(
-                (cliente, campo("descricao").strip(), credito, debito, correcao)
+                (cliente, campo("descricao").strip(), entrada, credito, debito, correcao)
             )
         return registos, erros
 
@@ -505,13 +536,15 @@ def _(DB_NAME, bd_pronta, importar_csv_form, mo, params, psycopg):
                     with conn_csv.cursor() as cur_csv:
                         cur_csv.executemany(
                             "INSERT INTO movimentos "
-                            '(cliente, descricao, credito, debito, "correção", "data&hora") '
-                            "VALUES (%s, %s, %s, %s, %s, clock_timestamp())",
+                            '(cliente, descricao, entrada, credito, debito, "correção", '
+                            '"data&hora") VALUES (%s, %s, '
+                            "COALESCE(%s::date, (now() AT TIME ZONE 'Europe/Lisbon')::date), "
+                            "%s, %s, %s, clock_timestamp())",
                             _registos,
                         )
                 inseridos_csv = len(_registos)
-                _total_credito = sum(r[2] for r in _registos)
-                _total_debito = sum(r[3] for r in _registos)
+                _total_credito = sum(r[3] for r in _registos)
+                _total_debito = sum(r[4] for r in _registos)
                 mensagem_importacao = mo.md(
                     f"✅ **{inseridos_csv}** registo(s) inserido(s) a partir de "
                     f"**{_ficheiros[0].name}** — crédito total {_total_credito:.2f} €, "
@@ -547,9 +580,12 @@ def _(mo):
 
             **Saldo (€) entre:** {saldo_min} e {saldo_max}
 
-            _Nos limites pode usar `?`: no campo **mín.** significa o valor
-            mínimo da coluna e no campo **máx.** o valor máximo (entre os
-            registos do cliente/correções escolhidos)._
+            **Entrada (data da transação) entre:** {entrada_min} e {entrada_max}
+
+            _Datas em `AAAA-MM-DD` ou `DD/MM/AAAA`. Nos limites pode usar `?`:
+            no campo **mín.** significa o valor mínimo da coluna e no campo
+            **máx.** o valor máximo (entre os registos do cliente/correções
+            escolhidos)._
             """
         )
         .batch(
@@ -563,6 +599,8 @@ def _(mo):
             debito_max=mo.ui.text(value="", label="máx."),
             saldo_min=mo.ui.text(value="", label="mín."),
             saldo_max=mo.ui.text(value="", label="máx."),
+            entrada_min=mo.ui.text(value="", label="desde", placeholder="DD/MM/AAAA"),
+            entrada_max=mo.ui.text(value="", label="até", placeholder="DD/MM/AAAA"),
         )
         .form(submit_button_label="Selecionar")
     )
@@ -572,7 +610,15 @@ def _(mo):
 
 @app.cell
 def _(
-    DB_NAME, bd_pronta, filtro_form, inserido, inseridos_csv, mo, params, psycopg
+    DB_NAME,
+    bd_pronta,
+    filtro_form,
+    inserido,
+    inseridos_csv,
+    mo,
+    params,
+    psycopg,
+    rel_lib,
 ):
     # 6) Apresentar a seleção (as linhas podem ser marcadas na tabela para,
     # se o utilizador for "postgres", serem purgadas — ver secção seguinte)
@@ -618,10 +664,10 @@ def _(
         (_valores[_k] or "").strip() == "?"
         for _, _kmin, _kmax in _limites
         for _k in (_kmin, _kmax)
-    ):
+    ) or "?" in ((_valores["entrada_min"] or "").strip(), (_valores["entrada_max"] or "").strip()):
         _sql_ext = (
             "SELECT MIN(credito), MAX(credito), MIN(debito), MAX(debito), "
-            "MIN(saldo), MAX(saldo) FROM movimentos"
+            "MIN(saldo), MAX(saldo), MIN(entrada), MAX(entrada) FROM movimentos"
         )
         if _condicoes:
             _sql_ext += " WHERE " + " AND ".join(_condicoes)
@@ -633,6 +679,7 @@ def _(
                 None if _mn is None else float(_mn),
                 None if _mx is None else float(_mx),
             )
+        _extremos["entrada"] = (_ext[6], _ext[7])
 
     _substituicoes = []  # descrição dos "?" resolvidos, para mostrar ao utilizador
     try:
@@ -664,9 +711,31 @@ def _(
             ),
         )
 
+    # Gama de datas de entrada (data da transação)
+    _ent_ext_min, _ent_ext_max = _extremos.get("entrada", (None, None))
+    try:
+        for _chave, _operador, _extremo, _nome in (
+            ("entrada_min", ">=", _ent_ext_min, "desde"),
+            ("entrada_max", "<=", _ent_ext_max, "até"),
+        ):
+            _texto = (_valores[_chave] or "").strip()
+            if _texto == "?":
+                _data = _extremo
+                _substituicoes.append(
+                    f"entrada {_nome} = "
+                    + ("—" if _data is None else f"{_data:%d/%m/%Y}")
+                )
+            else:
+                _data = rel_lib.ler_data(_texto)
+            if _data is not None:
+                _condicoes.append(f"entrada {_operador} %s")
+                _parametros.append(_data)
+    except ValueError as _erro:
+        mo.stop(True, mo.md(f"**Data de entrada inválida:** {_erro}."))
+
     _sql = (
-        'SELECT id, cliente, descricao, credito, debito, "data&hora", saldo, "correção" '
-        "FROM movimentos"
+        "SELECT id, cliente, descricao, credito, debito, entrada, "
+        '"data&hora", saldo, "correção" FROM movimentos'
     )
     if _condicoes:
         _sql += " WHERE " + " AND ".join(_condicoes)
@@ -683,11 +752,12 @@ def _(
                 "descricao": d,
                 "credito (€)": float(cr),
                 "debito (€)": float(db),
+                "entrada": ent,
                 "data & hora": dh,
                 "saldo (€)": float(sa),
                 "correção": corr,
             }
-            for rid, c, d, cr, db, dh, sa, corr in _linhas
+            for rid, c, d, cr, db, ent, dh, sa, corr in _linhas
         ],
         label=f"Movimentos ({len(_linhas)} registo(s)) — selecione linhas para purgar",
         selection="multi",
@@ -765,6 +835,7 @@ def _(exportar_csv_form, mo, os, resultado_tabela):
             "descricao",
             "credito (€)",
             "debito (€)",
+            "entrada",
             "data & hora",
             "saldo (€)",
             "correção",
@@ -902,6 +973,10 @@ def _(bd_pronta, mo, utilizador):
             **Débito (€) entre:** {debito_min} e {debito_max}
 
             **Saldo (€) entre:** {saldo_min} e {saldo_max}
+
+            **Entrada (data da transação) entre:** {entrada_min} e {entrada_max}
+            _(datas fixas em `AAAA-MM-DD` ou `DD/MM/AAAA`; o período do relatório
+            continua a ser o da data do registo)_
             """
         )
         .batch(
@@ -924,6 +999,8 @@ def _(bd_pronta, mo, utilizador):
             debito_max=mo.ui.text(value="", label="máx."),
             saldo_min=mo.ui.text(value="", label="mín."),
             saldo_max=mo.ui.text(value="", label="máx."),
+            entrada_min=mo.ui.text(value="", label="desde", placeholder="DD/MM/AAAA"),
+            entrada_max=mo.ui.text(value="", label="até", placeholder="DD/MM/AAAA"),
         )
         .form(submit_button_label="Criar relatório", clear_on_submit=True)
     )
@@ -969,11 +1046,20 @@ def _(
             }
         except _InvOp:
             raise ValueError("limite numérico inválido (use p. ex. 100 ou 100,50)")
+        _entrada_min_rel = rel_lib.ler_data(_v["entrada_min"])
+        _entrada_max_rel = rel_lib.ler_data(_v["entrada_max"])
+        if (
+            _entrada_min_rel is not None
+            and _entrada_max_rel is not None
+            and _entrada_min_rel > _entrada_max_rel
+        ):
+            raise ValueError("a data de entrada «desde» é posterior à data «até»")
         with psycopg.connect(**params, dbname=DB_NAME) as _conn_rel:
             _conn_rel.execute(
                 "INSERT INTO relatorios (nome, frequencia, destinatario, cliente, "
                 "apenas_correcoes, credito_min, credito_max, debito_min, debito_max, "
-                "saldo_min, saldo_max) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "saldo_min, saldo_max, entrada_min, entrada_max) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     _nome_rel,
                     _v["frequencia"],
@@ -981,6 +1067,8 @@ def _(
                     _v["cliente"].strip() or None,
                     _v["apenas_correcoes"],
                     *(_limites_rel[f"{_c}_{_s}"] for _c in rel_lib.LIMITES for _s in ("min", "max")),
+                    _entrada_min_rel,
+                    _entrada_max_rel,
                 ),
             )
         set_versao_relatorios(get_versao_relatorios() + 1)
