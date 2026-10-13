@@ -37,6 +37,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row, tuple_row
 
 FUSO = ZoneInfo("Europe/Lisbon")
@@ -117,6 +118,60 @@ COMMENT ON COLUMN movimentos.entrada IS
     'Data da transação a que o movimento se refere (não posterior à data do registo)';
 CREATE INDEX IF NOT EXISTS idx_movimentos_entrada ON movimentos (entrada);
 """
+
+
+# Utilizador interno, só de leitura, que a app usa ANTES do login para mostrar
+# a lista de utilizadores. A password vem de LISTA_PASSWORD (.env; o
+# arrancar.sh gera-a). Não aparece na lista nem serve para entrar na app.
+UTILIZADOR_LISTA = "lista_utilizadores"
+
+
+def garantir_utilizador_lista(conn):
+    """Cria/atualiza o utilizador interno da lista (precisa de ser postgres).
+    Sem LISTA_PASSWORD não faz nada (a app mostra um campo de texto)."""
+    password = os.getenv("LISTA_PASSWORD", "")
+    if not password:
+        return
+    existe = conn.execute(
+        "SELECT 1 FROM pg_roles WHERE rolname = %s", (UTILIZADOR_LISTA,)
+    ).fetchone()
+    conn.execute(
+        sql.SQL(
+            "{} ROLE {} WITH LOGIN PASSWORD {} "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
+        ).format(
+            sql.SQL("ALTER" if existe else "CREATE"),
+            sql.Identifier(UTILIZADOR_LISTA),
+            sql.Literal(password),
+        )
+    )
+    # só consultas: as suas sessões são sempre só de leitura
+    conn.execute(
+        sql.SQL("ALTER ROLE {} SET default_transaction_read_only = on").format(
+            sql.Identifier(UTILIZADOR_LISTA)
+        )
+    )
+
+
+def listar_utilizadores(host, port):
+    """Nomes dos utilizadores que podem entrar na app (vazio se não for possível)."""
+    password = os.getenv("LISTA_PASSWORD", "")
+    if not password:
+        return []
+    try:
+        with psycopg.connect(
+            host=host, port=port, user=UTILIZADOR_LISTA, password=password,
+            dbname="postgres", connect_timeout=3,
+        ) as conn:
+            linhas = conn.execute(
+                "SELECT rolname FROM pg_roles "
+                "WHERE rolcanlogin AND rolname !~ '^pg_' AND rolname <> %s "
+                "ORDER BY rolname = 'postgres' DESC, rolname",
+                (UTILIZADOR_LISTA,),
+            ).fetchall()
+        return [nome for (nome,) in linhas]
+    except psycopg.Error:
+        return []
 
 
 def criar_tabela(conn):
@@ -412,6 +467,7 @@ def main():
                 conn = psycopg.connect(dbname="contabilidade", row_factory=dict_row)
                 garantir_coluna_entrada(conn)
                 criar_tabela(conn)
+                garantir_utilizador_lista(conn)
                 conn.commit()
             if dt.datetime.now(FUSO).hour >= hora_envio:
                 ciclo(conn, falhas)

@@ -59,6 +59,13 @@ dados (ex.: `postgres` com a password definida em `POSTGRES_PASSWORD` no `.env`)
 
 ## Gestão de utilizadores
 
+No ecrã de autenticação, o utilizador escolhe-se numa lista com os utilizadores
+da base de dados. Para obter essa lista antes do login, a app usa um
+utilizador interno só de leitura, `lista_utilizadores`, cuja password
+(`LISTA_PASSWORD` no `.env`) é gerada automaticamente pelo `arrancar.sh`.
+Sem `LISTA_PASSWORD`, o ecrã mostra um campo para escrever o nome.
+Um utilizador novo aparece na lista ao recarregar a página.
+
 Com os containers a correr, na pasta do projeto:
 
 ```bash

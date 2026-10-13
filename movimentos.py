@@ -84,8 +84,16 @@ def _(os):
 
 
 @app.cell
-def _(mo):
-    # 1) Autenticação
+def _(DB_HOST, DB_PORT, mo, rel_lib):
+    # 1) Autenticação. O utilizador escolhe-se numa lista (pop-up) com os
+    # utilizadores da base de dados; se a lista não estiver disponível
+    # (falta LISTA_PASSWORD no .env), escreve-se o nome.
+    _utilizadores = rel_lib.listar_utilizadores(DB_HOST, DB_PORT)
+    _campo_utilizador = (
+        mo.ui.dropdown(options=_utilizadores, label="Utilizador")
+        if _utilizadores
+        else mo.ui.text(value="", label="Utilizador")
+    )
     login_form = (
         mo.md(
             """
@@ -97,7 +105,7 @@ def _(mo):
             """
         )
         .batch(
-            utilizador=mo.ui.text(value="", label="Utilizador"),
+            utilizador=_campo_utilizador,
             password=mo.ui.text(value="", label="Password", kind="password"),
         )
         .form(submit_button_label="Entrar")
@@ -113,7 +121,8 @@ def _(DB_HOST, DB_PORT, login_form, mo, psycopg):
         mo.md("Introduza as suas credenciais e carregue em **Entrar**."),
     )
 
-    _utilizador = login_form.value["utilizador"].strip()
+    _utilizador = (login_form.value["utilizador"] or "").strip()
+    mo.stop(not _utilizador, mo.md("**Escolha o utilizador** e carregue em **Entrar**."))
     _password = login_form.value["password"]
 
     try:
@@ -316,7 +325,7 @@ def _(bd_pronta, mo, rel_lib):
         )
         .batch(
             cliente=mo.ui.text(value="", label="Cliente"),
-            descricao=mo.ui.text(value="", label="Descrição"),
+            descricao=mo.ui.text(value="", label="Descrição", full_width=True),
             # data da transação: nunca posterior a hoje (a data do registo)
             entrada=mo.ui.date(
                 value=_hoje, stop=_hoje, label="Data da transação (entrada)"

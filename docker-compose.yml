@@ -41,6 +41,8 @@ services:
       GMAIL_USER: ${GMAIL_USER:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
       HORA_ENVIO: ${HORA_ENVIO:-7}
+      # utilizador interno (só leitura) para a lista de utilizadores do login
+      LISTA_PASSWORD: ${LISTA_PASSWORD:-}
       TZ: Europe/Lisbon
     depends_on:
       db:
@@ -55,6 +57,8 @@ services:
       # para o botão "Enviar agora" dos relatórios
       GMAIL_USER: ${GMAIL_USER:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      # lista de utilizadores (pop-up) no ecrã de autenticação
+      LISTA_PASSWORD: ${LISTA_PASSWORD:-}
       TZ: Europe/Lisbon
     ports:
       - "2718:2718"   # aplicação em http://localhost:2718

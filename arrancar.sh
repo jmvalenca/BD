@@ -25,6 +25,14 @@ else
 fi
 [ -f .env ] || erro "falta o ficheiro .env (cp .env.example .env e defina a password)."
 
+# Password do utilizador interno da lista de utilizadores (ecrã de
+# autenticação): gerada uma vez, ao acaso, se ainda não existir no .env.
+if ! grep -q '^LISTA_PASSWORD=.' .env; then
+    echo "A gerar LISTA_PASSWORD no .env…"
+    printf '\n# Utilizador interno (só leitura) para a lista de utilizadores do login\nLISTA_PASSWORD=%s\n' \
+        "$(openssl rand -hex 16)" >> .env
+fi
+
 # Resto do Docker Desktop: o ~/.docker/config.json fica com
 # "credsStore": "desktop", e sem o Docker Desktop o docker falha a descarregar
 # imagens (docker-credential-desktop: executable file not found). Retirar essa

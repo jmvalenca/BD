@@ -26,7 +26,8 @@ verificar_docker() {
 validar_nome() {
     [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] \
         || erro "nome inválido '$1' (use minúsculas, algarismos e _, até 63 caracteres)."
-    [[ "$1" == postgres || "$1" == pg_* ]] && erro "o utilizador '$1' é reservado."
+    [[ "$1" == postgres || "$1" == pg_* || "$1" == lista_utilizadores ]] \
+        && erro "o utilizador '$1' é reservado."
     return 0
 }
 
