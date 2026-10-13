@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 
 @main
 struct MovimentosApp: App {
@@ -28,6 +29,10 @@ final class Manager: ObservableObject {
     @Published var repoDir: String { didSet { UserDefaults.standard.set(repoDir, forKey: "repoDir") } }
     @Published var repoLocal: String { didSet { UserDefaults.standard.set(repoLocal, forKey: "repoLocal") } }
     private var tunnel: Process?
+    private var erroTunnel: Pipe?
+    // Porto local do browser: no modo remoto pode não ser o 2718, se este Mac
+    // também tiver o seu próprio servidor local (Colima) a ocupar esse porto.
+    private var portaLocal = 2718
     private var geracao = 0   // muda a cada "Desligar": cancela esperas em curso
     private let porta = 2718
     private let opcoesSSH = ["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
@@ -35,7 +40,7 @@ final class Manager: ObservableObject {
 
     init() {
         let d = UserDefaults.standard
-        destino = d.string(forKey: "destino") ?? "josevalenca@mbp-de-jose"
+        destino = d.string(forKey: "destino") ?? "postgres@mini-de-jose"
         repoDir = d.string(forKey: "repoDir") ?? "~/Public/BD"
         repoLocal = d.string(forKey: "repoLocal") ?? "~/Public/BD"
         ultimoModo = Modo(rawValue: d.string(forKey: "modo") ?? "") ?? .local
@@ -105,7 +110,7 @@ final class Manager: ObservableObject {
                     ? "Servidor ativo ✅ — clique em «Abrir no browser»"
                     : "Servidor ativo ✅ (\(destino)) — clique em «Ligar»")
             } else if modo == .remoto && r.0 == 255 {
-                self.setStatus("Falha na ligação SSH ❌ — \(r.1)")
+                self.setStatus("Falha na ligação SSH ❌ — " + self.explicarErroSSH(r.1, destino))
             } else {
                 self.setStatus("Falha ao arrancar ❌ — \(r.1.isEmpty ? "verifique o Colima" : r.1)")
             }
@@ -119,17 +124,26 @@ final class Manager: ObservableObject {
         guard let modo = modo else { return }
         parar()
         let g = geracao
+        let destino = self.destino
         if modo == .remoto {
-            if responde() {
-                setStatus("O porto \(porta) já está ocupado ❌ — há um servidor local a correr?")
+            // 1.º porto livre a partir do 2718 (o 2718 pode estar ocupado pelo
+            // servidor local deste Mac); no servidor remoto é sempre o 2718.
+            guard let livre = (porta..<(porta + 20)).first(where: { portaLivre($0) }) else {
+                setStatus("Não há nenhum porto livre entre \(porta) e \(porta + 19) ❌")
                 return
             }
-            setStatus("A ligar…")
+            portaLocal = livre
+            setStatus("A ligar a \(destino)…")
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            p.arguments = opcoesSSH + ["-N", "-L", "\(porta):127.0.0.1:\(porta)", destino]
-            do { try p.run(); tunnel = p } catch { setStatus("Erro ao criar o túnel: \(error.localizedDescription)"); return }
+            p.arguments = opcoesSSH + ["-N", "-L", "\(livre):127.0.0.1:\(porta)", destino]
+            let erro = Pipe()
+            p.standardError = erro
+            do { try p.run(); tunnel = p; erroTunnel = erro } catch {
+                setStatus("Erro ao criar o túnel: \(error.localizedDescription)"); return
+            }
         } else {
+            portaLocal = porta
             setStatus("A aguardar a aplicação…")
         }
         DispatchQueue.global().async {
@@ -137,18 +151,21 @@ final class Manager: ObservableObject {
                 Thread.sleep(forTimeInterval: 1)
                 if self.geracao != g { return }   // foi desligado entretanto
                 if modo == .remoto, let t = self.tunnel, !t.isRunning {
-                    self.setStatus("O túnel SSH falhou ❌ (sem acesso SSH ou porto \(self.porta) ocupado)")
+                    let dados = self.erroTunnel?.fileHandleForReading.readDataToEndOfFile() ?? Data()
+                    let texto = String(decoding: dados, as: UTF8.self)
+                    self.setStatus("O túnel SSH falhou ❌ — " + self.explicarErroSSH(texto, destino))
                     return
                 }
-                if self.responde() {
-                    self.setStatus("Ligado ✅ http://localhost:\(self.porta)")
-                    DispatchQueue.main.async {
-                        NSWorkspace.shared.open(URL(string: "http://localhost:\(self.porta)")!)
-                    }
+                if self.responde(self.portaLocal) {
+                    let url = "http://localhost:\(self.portaLocal)"
+                    self.setStatus(modo == .remoto ? "Ligado a \(destino) ✅ \(url)" : "Ligado ✅ \(url)")
+                    DispatchQueue.main.async { NSWorkspace.shared.open(URL(string: url)!) }
                     return
                 }
             }
-            self.setStatus("A aplicação não respondeu em 60s ❌ (arrancou o servidor?)")
+            self.setStatus(modo == .remoto
+                ? "A aplicação não respondeu em 60s ❌ — o servidor está a correr em \(destino)? (experimente «Arrancar servidor»)"
+                : "A aplicação não respondeu em 60s ❌ (arrancou o servidor?)")
         }
     }
 
@@ -156,13 +173,54 @@ final class Manager: ObservableObject {
         geracao += 1
         tunnel?.terminate()
         tunnel = nil
+        erroTunnel = nil
         setStatus(modo == .local ? "Servidor local (Colima neste Mac)" : "Desligado")
     }
 
-    private func responde() -> Bool {
+    // Verdadeiro se nenhum programa estiver a usar o porto neste Mac.
+    private func portaLivre(_ p: Int) -> Bool {
+        let s = socket(AF_INET, SOCK_STREAM, 0)
+        if s < 0 { return false }
+        defer { Darwin.close(s) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(p).bigEndian)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let r = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return r == 0 && !responde(p)
+    }
+
+    // Traduz os erros mais comuns do ssh numa indicação do que fazer.
+    private func explicarErroSSH(_ texto: String, _ destino: String) -> String {
+        let t = texto.lowercased()
+        let ultima = texto.split(whereSeparator: \.isNewline).last.map(String.init) ?? "sem resposta do ssh"
+        if t.contains("permission denied") {
+            return "o SSH pede password, mas a app só entra com chave. No Terminal: ssh-copy-id \(destino)"
+        }
+        if t.contains("could not resolve hostname") {
+            return "nome do servidor desconhecido (\(destino)). Experimente o nome com .local, p. ex. mini-de-jose.local"
+        }
+        if t.contains("host key verification failed") {
+            return "chave do servidor ainda não aceite. No Terminal: ssh \(destino) (e responda yes)"
+        }
+        if t.contains("connection refused") {
+            return "o servidor recusou a ligação: ative «Início de sessão remoto» nas Definições do Sistema dele"
+        }
+        if t.contains("timed out") || t.contains("no route to host") {
+            return "o servidor não responde (desligado, a dormir ou noutra rede?)"
+        }
+        return ultima
+    }
+
+    private func responde(_ p: Int? = nil) -> Bool {
         let check = Process()
         check.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        check.arguments = ["-s", "-o", "/dev/null", "--max-time", "1", "http://127.0.0.1:\(porta)"]
+        check.arguments = ["-s", "-o", "/dev/null", "--max-time", "1", "http://127.0.0.1:\(p ?? porta)"]
         do { try check.run() } catch { return false }
         check.waitUntilExit()
         return check.terminationStatus == 0
