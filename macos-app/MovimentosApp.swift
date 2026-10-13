@@ -4,7 +4,12 @@ import Darwin
 @main
 struct MovimentosApp: App {
     var body: some Scene {
-        WindowGroup { ContentView() }
+        // As ligações movimentos://… (botão «Fechar aplicação» da página) vão
+        // para a janela já aberta, em vez de abrirem uma janela nova.
+        WindowGroup {
+            ContentView().handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        }
+        .handlesExternalEvents(matching: ["*"])
     }
 }
 
@@ -44,6 +49,51 @@ final class Manager: ObservableObject {
         repoDir = d.string(forKey: "repoDir") ?? "~/Public/BD"
         repoLocal = d.string(forKey: "repoLocal") ?? "~/Public/BD"
         ultimoModo = Modo(rawValue: d.string(forKey: "modo") ?? "") ?? .local
+        // Túnel que tenha ficado aberto (a app terminou de forma anormal):
+        // fechá-lo para libertar o porto 2718.
+        let pidAntigo = d.integer(forKey: "pidTunnel")
+        if pidAntigo > 0 { matarSeForSSH(pid_t(pidAntigo)) }
+        d.removeObject(forKey: "pidTunnel")
+    }
+
+    private func matarSeForSSH(_ pid: pid_t) {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-p", "\(pid)", "-o", "comm="]
+        let saida = Pipe()
+        ps.standardOutput = saida
+        do { try ps.run() } catch { return }
+        let nome = String(decoding: saida.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        ps.waitUntilExit()
+        if nome.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("ssh") {
+            kill(pid, SIGTERM)
+        }
+    }
+
+    // Saída controlada (botão «Fechar aplicação» da página, link
+    // movimentos://sair): fecha o túnel, confirma que o porto ficou livre e
+    // termina a app. No modo local o porto 2718 é do próprio servidor, que
+    // continua a correr (backups, relatórios).
+    func sair() {
+        let t = tunnel
+        let porto = portaLocal
+        let remoto = modo == .remoto
+        parar()
+        setStatus("A fechar a ligação…")
+        DispatchQueue.global().async {
+            if let t = t {
+                for _ in 0..<30 where t.isRunning { Thread.sleep(forTimeInterval: 0.1) }
+                if t.isRunning { kill(t.processIdentifier, SIGKILL); t.waitUntilExit() }
+            }
+            let livre = !remoto || t == nil || self.portaLivre(porto)
+            DispatchQueue.main.async {
+                if livre {
+                    NSApp.terminate(nil)
+                } else {
+                    self.status = "O porto \(porto) continua ocupado ❌ — veja no Terminal: lsof -i :\(porto)"
+                }
+            }
+        }
     }
 
     func setStatus(_ s: String) { DispatchQueue.main.async { self.status = s } }
@@ -139,7 +189,10 @@ final class Manager: ObservableObject {
             p.arguments = opcoesSSH + ["-N", "-L", "\(livre):127.0.0.1:\(porta)", destino]
             let erro = Pipe()
             p.standardError = erro
-            do { try p.run(); tunnel = p; erroTunnel = erro } catch {
+            do {
+                try p.run(); tunnel = p; erroTunnel = erro
+                UserDefaults.standard.set(Int(p.processIdentifier), forKey: "pidTunnel")
+            } catch {
                 setStatus("Erro ao criar o túnel: \(error.localizedDescription)"); return
             }
         } else {
@@ -171,9 +224,17 @@ final class Manager: ObservableObject {
 
     func parar() {
         geracao += 1
-        tunnel?.terminate()
+        if let t = tunnel, t.isRunning {
+            t.terminate()
+            // se o ssh não sair a bem em 2 s, termina à força (liberta o porto)
+            let pid = t.processIdentifier
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                if t.isRunning { kill(pid, SIGKILL) }
+            }
+        }
         tunnel = nil
         erroTunnel = nil
+        UserDefaults.standard.removeObject(forKey: "pidTunnel")
         setStatus(modo == .local ? "Servidor local (Colima neste Mac)" : "Desligado")
     }
 
@@ -187,6 +248,10 @@ final class Manager: ObservableObject {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(UInt16(p).bigEndian)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        // como o ssh: ignora ligações antigas em TIME_WAIT, só falha se
+        // outro programa estiver mesmo à escuta no porto
+        var um: Int32 = 1
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &um, socklen_t(MemoryLayout<Int32>.size))
         let r = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.bind(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
@@ -243,6 +308,10 @@ struct ContentView: View {
         // ao sair da app, fechar o túnel SSH (se existir)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             m.parar()
+        }
+        // botão «Fechar aplicação» da página: movimentos://sair
+        .onOpenURL { url in
+            if url.scheme == "movimentos" && url.host == "sair" { m.sair() }
         }
     }
 }

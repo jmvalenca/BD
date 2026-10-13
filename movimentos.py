@@ -147,18 +147,28 @@ def _(DB_HOST, DB_PORT, login_form, mo, psycopg):
 
 @app.cell
 def _(autenticado, mo):
-    # 2) Comando para fechar a aplicação
+    # 2) Saída controlada. O link movimentos://sair é tratado pela app macOS
+    # Movimentos (neste Mac): fecha o túnel SSH, confirma que o porto 2718
+    # ficou livre e termina. O servidor continua a correr para os outros
+    # utilizadores, para os backups e para os relatórios — por isso já não se
+    # termina o processo do marimo (no Docker isso desligava toda a gente).
     _ = autenticado
-    fechar_botao = mo.ui.run_button(label="⏻ Fechar aplicação")
-    fechar_botao
-    return (fechar_botao,)
-
-
-@app.cell
-def _(fechar_botao, mo, os):
-    if fechar_botao.value:
-        mo.md("A fechar a aplicação. Pode fechar esta janela do browser.")
-        os._exit(0)
+    mo.Html(
+        """
+        <div style="display:flex; align-items:center; gap:0.9rem; flex-wrap:wrap;
+                    padding:0.7rem 1rem; border-radius:10px;
+                    border:1px solid #d4af6a; background:#fbf7ee;">
+          <a href="movimentos://sair"
+             style="display:inline-block; padding:0.45rem 1rem; border-radius:8px;
+                    background:#0f2b3d; color:#f4f1ea; text-decoration:none;
+                    font-weight:600; white-space:nowrap;">⏻ Fechar aplicação</a>
+          <span style="font-size:0.9rem; color:#3b4a54;">
+            Para sair, use <b>sempre</b> este botão: fecha a ligação ao servidor
+            e liberta o porto 2718 neste Mac. Depois pode fechar esta janela.
+          </span>
+        </div>
+        """
+    )
     return
 
 

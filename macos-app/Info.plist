@@ -11,6 +11,14 @@
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <!-- movimentos://sair: botão «Fechar aplicação» da página (saída controlada) -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>rl.armindamelo.movimentos</string>
+            <key>CFBundleURLSchemes</key><array><string>movimentos</string></array>
+        </dict>
+    </array>
     <key>NSHumanReadableCopyright</key><string>Arminda Melo RL</string>
 </dict>
 </plist>

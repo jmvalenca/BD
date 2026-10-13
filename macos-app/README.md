@@ -47,5 +47,12 @@ da última vez; para trocar depois, use **Mudar…**):
   Se a ligação falhar, a mensagem de estado diz o motivo (password pedida,
   nome desconhecido, servidor a dormir, …).
 
+**Sair:** use sempre o botão **⏻ Fechar aplicação** da página. Abre a
+ligação `movimentos://sair`, que esta app trata: fecha o túnel SSH, confirma
+que o porto 2718 deste Mac ficou livre e termina. Da 1.ª vez o browser
+pergunta se pode abrir a app Movimentos — aceite (e marque «sempre»).
+O servidor continua a correr. Se a app terminar de forma anormal, o túnel
+que tenha ficado aberto é fechado da próxima vez que a app abrir.
+
 Em ambos os casos o Colima tem de estar instalado na máquina do servidor
 (ver `DOCKER-README.md`). O modo e as definições são guardados entre utilizações.
