@@ -148,8 +148,8 @@ def _(DB_HOST, DB_PORT, login_form, mo, psycopg):
 @app.cell
 def _(autenticado, mo):
     # 2) Saída controlada. O link movimentos://sair é tratado pela app macOS
-    # Movimentos (neste Mac): fecha o túnel SSH, confirma que o porto 2718
-    # ficou livre e termina. O servidor continua a correr para os outros
+    # Movimentos (neste Mac): vem para a frente, fecha o túnel SSH, confirma
+    # que o porto 2718 ficou livre, mostra «1.ª fase concluída» e termina. O servidor continua a correr para os outros
     # utilizadores, para os backups e para os relatórios — por isso já não se
     # termina o processo do marimo (no Docker isso desligava toda a gente).
     _ = autenticado
@@ -163,8 +163,11 @@ def _(autenticado, mo):
                     background:#0f2b3d; color:#f4f1ea; text-decoration:none;
                     font-weight:600; white-space:nowrap;">⏻ Fechar aplicação</a>
           <span style="font-size:0.9rem; color:#3b4a54;">
-            Para sair, use <b>sempre</b> este botão: fecha a ligação ao servidor
-            e liberta o porto 2718 neste Mac. Depois pode fechar esta janela.
+            Para sair, use <b>sempre</b> este botão.
+            <b>1.ª fase:</b> a app Movimentos vem para a frente, fecha a ligação
+            ao servidor e liberta o porto 2718 neste Mac — espere pela
+            indicação <b>✅ 1.ª fase concluída</b>.
+            <b>2.ª fase:</b> só então feche esta janela do browser.
           </span>
         </div>
         """

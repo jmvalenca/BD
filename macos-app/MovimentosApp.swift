@@ -19,6 +19,26 @@ enum Modo: String {
     case remoto   // noutro Mac, por SSH (com túnel para o porto 2718)
 }
 
+// Estado de cada passo da 1.ª fase do encerramento (mostrado na janela da app).
+enum Passo: Equatable {
+    case emCurso
+    case ok(String)
+    case naoAplicavel(String)
+    case falhou(String)
+}
+
+// Encerramento em duas fases, iniciado pelo botão «Fechar aplicação» da página:
+//  1.ª fase (esta app): fechar o túnel SSH e confirmar que o porto ficou livre;
+//  2.ª fase (utilizador): fechar a janela/separador do browser.
+struct Encerramento {
+    var tunel: Passo = .emCurso
+    var porto: Passo = .emCurso
+    // nil enquanto a 1.ª fase decorre; true/false quando termina
+    var fase1Concluida: Bool? = nil
+    // segundos até a app terminar sozinha (nil = sem contagem)
+    var contagem: Int? = nil
+}
+
 // Arranca o servidor (Colima + docker compose, através do arrancar.sh do repo)
 // e dá acesso à aplicação Marimo em http://localhost:2718:
 //  - modo local:  diretamente;
@@ -33,6 +53,10 @@ final class Manager: ObservableObject {
     @Published var destino: String { didSet { UserDefaults.standard.set(destino, forKey: "destino") } }
     @Published var repoDir: String { didSet { UserDefaults.standard.set(repoDir, forKey: "repoDir") } }
     @Published var repoLocal: String { didSet { UserDefaults.standard.set(repoLocal, forKey: "repoLocal") } }
+    // Encerramento em curso (nil = não): a janela mostra o progresso da 1.ª fase.
+    @Published var encerramento: Encerramento? = nil
+    private var geracaoContagem = 0   // cancela a contagem decrescente
+    private var portoPorLibertar: Int? = nil   // porto que ficou ocupado no último encerramento
     private var tunnel: Process?
     private var erroTunnel: Pipe?
     // Porto local do browser: no modo remoto pode não ser o 2718, se este Mac
@@ -71,28 +95,93 @@ final class Manager: ObservableObject {
     }
 
     // Saída controlada (botão «Fechar aplicação» da página, link
-    // movimentos://sair): fecha o túnel, confirma que o porto ficou livre e
-    // termina a app. No modo local o porto 2718 é do próprio servidor, que
-    // continua a correr (backups, relatórios).
+    // movimentos://sair). 1.ª fase, mostrada passo a passo nesta janela, que
+    // vem para a frente: fecha o túnel e confirma que o porto ficou livre.
+    // Quando termina, a janela diz que pode fechar o browser (2.ª fase) e a
+    // app termina sozinha ao fim de alguns segundos. No modo local o porto
+    // 2718 é do próprio servidor, que continua a correr (backups, relatórios).
     func sair() {
+        if let e = encerramento, e.fase1Concluida == nil { return }  // já em curso
         let t = tunnel
-        let porto = portaLocal
+        // «Tentar de novo» depois de uma falha: o túnel já foi fechado, mas o
+        // porto tem de ser verificado outra vez.
+        let pendente = portoPorLibertar
+        let porto = t != nil ? portaLocal : (pendente ?? portaLocal)
         let remoto = modo == .remoto
+        geracaoContagem += 1
+        encerramento = Encerramento()
+        trazerParaAFrente()
         parar()
-        setStatus("A fechar a ligação…")
         DispatchQueue.global().async {
+            // Passo 1: fechar o túnel SSH
+            let passoTunel: Passo
             if let t = t {
                 for _ in 0..<30 where t.isRunning { Thread.sleep(forTimeInterval: 0.1) }
                 if t.isRunning { kill(t.processIdentifier, SIGKILL); t.waitUntilExit() }
+                passoTunel = t.isRunning
+                    ? .falhou("o túnel SSH não fechou (PID \(t.processIdentifier))")
+                    : .ok("Túnel SSH fechado")
+            } else if pendente != nil {
+                passoTunel = .ok("Túnel SSH fechado")
+            } else {
+                passoTunel = .naoAplicavel(remoto
+                    ? "Não havia nenhum túnel SSH aberto"
+                    : "Modo local: não há túnel SSH")
             }
-            let livre = !remoto || t == nil || self.portaLivre(porto)
+            DispatchQueue.main.async { self.encerramento?.tunel = passoTunel }
+
+            // Passo 2: confirmar que o porto deste Mac ficou livre
+            let passoPorto: Passo
+            if !remoto {
+                passoPorto = .naoAplicavel(
+                    "O porto \(porto) pertence ao servidor local, que continua ativo (backups e relatórios)")
+            } else if t == nil && pendente == nil {
+                passoPorto = .naoAplicavel("O porto \(porto) não estava a ser usado por esta app")
+            } else {
+                Thread.sleep(forTimeInterval: 0.3)
+                passoPorto = self.portaLivre(porto)
+                    ? .ok("Porto \(porto) livre neste Mac")
+                    : .falhou("O porto \(porto) continua ocupado — no Terminal: lsof -i :\(porto)")
+            }
             DispatchQueue.main.async {
-                if livre {
-                    NSApp.terminate(nil)
-                } else {
-                    self.status = "O porto \(porto) continua ocupado ❌ — veja no Terminal: lsof -i :\(porto)"
-                }
+                if case .falhou = passoPorto { self.portoPorLibertar = porto }
+                else { self.portoPorLibertar = nil }
+                self.encerramento?.porto = passoPorto
+                let falhou: Bool
+                if case .falhou = passoTunel { falhou = true }
+                else if case .falhou = passoPorto { falhou = true }
+                else { falhou = false }
+                self.encerramento?.fase1Concluida = !falhou
+                self.status = falhou ? "Fase 1 do encerramento falhou ❌" : "Fase 1 concluída ✅"
+                if !falhou { self.contarAteTerminar(10) }
+                self.trazerParaAFrente()
             }
+        }
+    }
+
+    // Contagem decrescente até terminar a app (cancelável com «Manter aberta»).
+    private func contarAteTerminar(_ segundos: Int) {
+        let g = geracaoContagem
+        encerramento?.contagem = segundos
+        if segundos <= 0 { NSApp.terminate(nil); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            guard self.geracaoContagem == g, self.encerramento != nil else { return }
+            self.contarAteTerminar(segundos - 1)
+        }
+    }
+
+    // «Manter aberta»: cancela o encerramento e volta ao painel normal.
+    func cancelarEncerramento() {
+        geracaoContagem += 1
+        encerramento = nil
+    }
+
+    // Mostra a janela da app à frente do browser, para se ver o progresso.
+    private func trazerParaAFrente() {
+        NSApp.activate(ignoringOtherApps: true)
+        for w in NSApp.windows where w.canBecomeKey {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -297,7 +386,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let modo = m.modo {
+            if let e = m.encerramento {
+                EncerramentoView(m: m, e: e)
+            } else if let modo = m.modo {
                 PainelView(m: m, modo: modo)
             } else {
                 EscolhaView(m: m)
@@ -312,6 +403,80 @@ struct ContentView: View {
         // botão «Fechar aplicação» da página: movimentos://sair
         .onOpenURL { url in
             if url.scheme == "movimentos" && url.host == "sair" { m.sair() }
+        }
+    }
+}
+
+// Encerramento: progresso da 1.ª fase e indicação da 2.ª (fechar o browser).
+struct EncerramentoView: View {
+    @ObservedObject var m: Manager
+    let e: Encerramento
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Movimentos · Arminda Melo RL").font(.headline)
+                .frame(maxWidth: .infinity)
+            Text("Encerramento da sessão").font(.title2).bold()
+
+            Text("1.ª fase — fechar a ligação").font(.headline)
+            linha(e.tunel)
+            linha(e.porto)
+
+            switch e.fase1Concluida {
+            case nil:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("A fechar a ligação…").foregroundStyle(.secondary)
+                }
+            case .some(true):
+                Label("1.ª fase concluída", systemImage: "checkmark.seal.fill")
+                    .font(.title3.bold())
+                    .foregroundStyle(.green)
+                Text("2.ª fase — feche agora a janela (ou o separador) do browser "
+                     + "com a aplicação Movimentos.")
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    if let s = e.contagem {
+                        Text("Esta app termina dentro de \(s) s.").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Manter aberta") { m.cancelarEncerramento() }
+                    Button("Terminar agora") { NSApp.terminate(nil) }
+                        .keyboardShortcut(.defaultAction)
+                }
+            case .some(false):
+                Label("A 1.ª fase não ficou concluída", systemImage: "exclamationmark.triangle.fill")
+                    .font(.title3.bold())
+                    .foregroundStyle(.red)
+                Text("Não feche ainda o browser. Resolva o problema acima e carregue em "
+                     + "«Tentar de novo», ou termine a app à mesma.")
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Voltar") { m.cancelarEncerramento() }
+                    Button("Terminar à mesma") { NSApp.terminate(nil) }
+                    Button("Tentar de novo") { m.sair() }.keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .frame(minWidth: 460, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func linha(_ p: Passo) -> some View {
+        switch p {
+        case .emCurso:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("…").foregroundStyle(.secondary)
+            }
+        case .ok(let t):
+            Label(t, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .naoAplicavel(let t):
+            Label(t, systemImage: "minus.circle").foregroundStyle(.secondary)
+        case .falhou(let t):
+            Label(t, systemImage: "xmark.circle.fill").foregroundStyle(.red)
         }
     }
 }

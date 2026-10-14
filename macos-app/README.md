@@ -48,11 +48,24 @@ da última vez; para trocar depois, use **Mudar…**):
   nome desconhecido, servidor a dormir, …).
 
 **Sair:** use sempre o botão **⏻ Fechar aplicação** da página. Abre a
-ligação `movimentos://sair`, que esta app trata: fecha o túnel SSH, confirma
-que o porto 2718 deste Mac ficou livre e termina. Da 1.ª vez o browser
-pergunta se pode abrir a app Movimentos — aceite (e marque «sempre»).
-O servidor continua a correr. Se a app terminar de forma anormal, o túnel
-que tenha ficado aberto é fechado da próxima vez que a app abrir.
+ligação `movimentos://sair`, que esta app trata em duas fases:
+
+1. **Fechar a ligação** — a janela da app vem para a frente e mostra cada
+   passo: túnel SSH fechado ✅ e porto 2718 (ou o porto do túnel) livre neste
+   Mac ✅. No fim aparece **«1.ª fase concluída»**. No modo local não há
+   túnel e o porto 2718 é do servidor local, que continua ativo; esses passos
+   aparecem como «não aplicável».
+2. **Fechar o browser** — só depois dessa indicação feche a janela (ou o
+   separador) do browser. A app termina sozinha ao fim de 10 s (ou carregue
+   em «Terminar agora»; «Manter aberta» cancela).
+
+Se a 1.ª fase falhar (p. ex. porto ainda ocupado), a janela mostra o motivo
+e os botões «Tentar de novo», «Voltar» e «Terminar à mesma».
+
+Da 1.ª vez o browser pergunta se pode abrir a app Movimentos — aceite (e
+marque «sempre»). O servidor continua a correr. Se a app terminar de forma
+anormal, o túnel que tenha ficado aberto é fechado da próxima vez que a app
+abrir.
 
 Em ambos os casos o Colima tem de estar instalado na máquina do servidor
 (ver `DOCKER-README.md`). O modo e as definições são guardados entre utilizações.
